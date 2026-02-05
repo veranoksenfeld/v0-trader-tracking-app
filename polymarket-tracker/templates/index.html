@@ -1200,9 +1200,9 @@
                 <div class="trades-header">
                     <h2>Recent Trades</h2>
                     <div class="filter-buttons">
-                        <button class="filter-btn active" onclick="filterTrades('all')">All</button>
-                        <button class="filter-btn" onclick="filterTrades('BUY')">Buys</button>
-                        <button class="filter-btn" onclick="filterTrades('SELL')">Sells</button>
+                        <button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button>
+                        <button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button>
+                        <button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button>
                     </div>
                 </div>
                 <table class="trades-table">
@@ -1951,7 +1951,13 @@
         function filterTrades(filter) {
             currentFilter = filter;
             document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.classList.toggle('active', btn.textContent.toLowerCase().includes(filter.toLowerCase()) || (filter === 'all' && btn.textContent === 'All'));
+                btn.classList.remove('active');
+            });
+            // Set active on the clicked button by matching data attribute
+            document.querySelectorAll('.filter-btn').forEach(btn => {
+                if (btn.getAttribute('data-filter') === filter) {
+                    btn.classList.add('active');
+                }
             });
             renderTrades();
         }
@@ -1962,7 +1968,10 @@
             
             let filteredTrades = allTrades;
             if (currentFilter !== 'all') {
-                filteredTrades = allTrades.filter(t => t.side === currentFilter);
+                filteredTrades = allTrades.filter(t => {
+                    const side = (t.side || '').toUpperCase();
+                    return side === currentFilter.toUpperCase();
+                });
             }
             
             if (filteredTrades.length === 0) {
@@ -2008,7 +2017,7 @@
                                 </div>
                             </div>
                         </td>
-                        <td><span class="side-${trade.side?.toLowerCase()}">${trade.side}</span></td>
+                        <td><span class="side-${(trade.side || '').toLowerCase()}">${(trade.side || '').toUpperCase()}</span></td>
                         <td class="trade-amount">${formatUSD(trade.usdc_size)}</td>
                         <td class="trade-price">${trade.price ? (trade.price * 100).toFixed(1) + '¢' : '-'}</td>
                         <td class="trade-time">${formatTime(trade.timestamp)}</td>
