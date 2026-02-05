@@ -20,6 +20,23 @@ except ImportError:
 
 DATABASE = 'polymarket_trades.db'
 
+
+def log_event(level, message, details=''):
+    """Write to unified_log table so the UI can display fetcher events"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+            (datetime.now().isoformat(), 'FETCHER', level, message, details)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass  # Table may not exist yet if app.py hasn't run
+
+
 # Polymarket API endpoints
 ACTIVITY_API = 'https://data-api.polymarket.com/activity'
 PROFILE_API = 'https://gamma-api.polymarket.com/public-profile'
@@ -140,9 +157,11 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
                 title = trade.get('title', 'Unknown')[:40]
                 size = trade.get('usdcSize', 0)
                 print(f"    NEW TRADE: {side} ${size} on {title}")
+                log_event('TRADE', f'Detected: {side} ${size} on {title}')
         return new_count
     except Exception as e:
         print(f"  Error fetching trades for {wallet_address[:10]}...: {e}")
+        log_event('ERROR', f'Fetch error for {wallet_address[:10]}', str(e))
         return 0
 
 
@@ -183,6 +202,7 @@ def fast_poll_loop():
 
             if total_new > 0:
                 print(f"[{datetime.now()}] Poll found {total_new} new trade(s)")
+                log_event('INFO', f'Poll found {total_new} new trade(s)')
 
             # Refresh profiles periodically
             if time.time() - last_profile_refresh > PROFILE_REFRESH_INTERVAL:
@@ -289,6 +309,7 @@ class PolymarketWSTracker:
     def on_open(self, ws):
         """WebSocket connected"""
         print(f"[WS] Connected to Polymarket WebSocket")
+        log_event('INFO', 'WebSocket connected to Polymarket')
         self.running = True
 
         # Subscribe to known assets
@@ -350,6 +371,7 @@ def run_fetcher():
     print("  Polymarket Real-Time Trade Fetcher")
     print("=" * 60)
     print()
+    log_event('INFO', 'Fetcher started', f'WS: {"available" if WS_AVAILABLE else "unavailable"}')
 
     # Initial fetch for all traders
     traders = get_tracked_traders()

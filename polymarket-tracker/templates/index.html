@@ -13,7 +13,8 @@
             --accent: #6366f1; --accent-hover: #4f46e5;
             --green: #22c55e; --green-dim: rgba(34,197,94,0.12);
             --red: #ef4444; --red-dim: rgba(239,68,68,0.12);
-            --yellow: #eab308; --radius: 10px;
+            --yellow: #eab308; --orange: #f97316; --cyan: #06b6d4;
+            --radius: 10px;
         }
         body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:var(--bg); color:var(--text); min-height:100vh; line-height:1.5; }
         a { color:var(--accent); text-decoration:none; } a:hover { color:#818cf8; }
@@ -32,6 +33,7 @@
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
         .balance-chip { display:flex; align-items:center; gap:8px; padding:5px 12px; background:var(--bg-input); border-radius:6px; font-size:13px; font-weight:600; color:var(--green); }
         .balance-chip .label { color:var(--text-dim); font-weight:400; }
+        .mock-badge { display:flex; align-items:center; gap:5px; font-size:11px; font-weight:700; padding:4px 10px; background:rgba(249,115,22,0.15); border:1px solid rgba(249,115,22,0.3); border-radius:6px; color:var(--orange); text-transform:uppercase; letter-spacing:.5px; }
         .engine-badge { display:flex; align-items:center; gap:6px; font-size:12px; padding:5px 10px; background:var(--bg-input); border-radius:6px; cursor:pointer; transition:all .15s; border:1px solid transparent; }
         .engine-badge:hover { border-color:var(--border-hover); }
         .engine-badge.on { color:var(--green); } .engine-badge.off { color:var(--text-dim); }
@@ -55,6 +57,7 @@
         .btn-outline { background:transparent; border:1px solid var(--border); color:var(--text-sec); }
         .btn-outline:hover { border-color:var(--accent); color:var(--accent); background:transparent; }
         .btn-success { background:var(--green); } .btn-success:hover { background:#16a34a; }
+        .btn-warn { background:var(--orange); } .btn-warn:hover { background:#ea580c; }
 
         .trader-item { display:flex; align-items:center; gap:10px; padding:10px 16px; cursor:pointer; transition:background .1s; border-left:3px solid transparent; }
         .trader-item:hover { background:var(--bg-hover); }
@@ -64,6 +67,7 @@
         .trader-meta { flex:1; min-width:0; }
         .trader-meta .name { font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:5px; }
         .trader-meta .addr { font-size:11px; color:var(--text-dim); font-family:monospace; }
+        .trader-meta .winrate { font-size:10px; font-weight:600; }
         .badge { font-size:9px; font-weight:700; padding:2px 5px; border-radius:3px; text-transform:uppercase; }
         .badge-copy { background:var(--green-dim); color:var(--green); }
         .badge-verified { color:var(--accent); font-size:13px; }
@@ -92,23 +96,10 @@
         .toggle::after { content:''; position:absolute; top:3px; left:3px; width:20px; height:20px; background:#fff; border-radius:50%; transition:transform .2s; }
         .toggle.active::after { transform:translateX(22px); }
 
-        .form-group { margin-bottom:14px; }
-        .form-group label { display:block; font-size:12px; color:var(--text-dim); margin-bottom:6px; font-weight:500; }
-        .form-group input, .form-group select { width:100%; padding:10px 12px; background:var(--bg-input); border:1px solid var(--border); border-radius:var(--radius); color:var(--text); font-size:13px; outline:none; }
-        .form-group input:focus, .form-group select:focus { border-color:var(--accent); }
-        .form-group small { display:block; margin-top:4px; font-size:11px; color:var(--text-dim); }
-        .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+        .toggle-row.mock-row { background:linear-gradient(135deg,#431407,#7c2d12); }
+        .toggle-row.mock-row .info p { color:#fdba74; }
 
-        .info-banner { display:flex; align-items:flex-start; gap:10px; border-radius:var(--radius); padding:14px 16px; margin-bottom:16px; }
-        .info-banner.warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.2); }
-        .info-banner.warn p { color:#fbbf24; }
-        .info-banner.info { background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2); }
-        .info-banner.info p { color:#a5b4fc; }
-        .info-banner svg { flex-shrink:0; margin-top:1px; }
-        .info-banner p { font-size:12px; line-height:1.5; }
-        .info-banner code { background:rgba(255,255,255,0.08); padding:1px 6px; border-radius:3px; font-family:monospace; font-size:11px; }
-
-        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:16px; }
+        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:10px; margin-bottom:16px; }
         .stat-card { background:var(--bg-input); border-radius:8px; padding:12px; text-align:center; }
         .stat-card .val { font-size:18px; font-weight:700; }
         .stat-card .lbl { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.3px; margin-top:2px; }
@@ -133,14 +124,28 @@
         .position-pnl .size { font-size:13px; font-weight:600; }
         .position-pnl .pnl { font-size:11px; }
 
+        .info-banner { display:flex; align-items:flex-start; gap:10px; border-radius:var(--radius); padding:14px 16px; margin-bottom:16px; }
+        .info-banner.warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.2); }
+        .info-banner.warn p { color:#fbbf24; }
+        .info-banner.info { background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2); }
+        .info-banner.info p { color:#a5b4fc; }
+        .info-banner svg { flex-shrink:0; margin-top:1px; }
+        .info-banner p { font-size:12px; line-height:1.5; }
+        .info-banner code { background:rgba(255,255,255,0.08); padding:1px 6px; border-radius:3px; font-family:monospace; font-size:11px; }
+
         .log-panel { max-height:500px; overflow-y:auto; font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace; font-size:12px; background:#0a0a0c; border-radius:8px; padding:12px; }
         .log-entry { padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.03); display:flex; gap:10px; line-height:1.6; }
         .log-entry .log-time { color:var(--text-dim); white-space:nowrap; flex-shrink:0; }
+        .log-entry .log-src { font-weight:600; width:56px; flex-shrink:0; font-size:10px; text-transform:uppercase; letter-spacing:.3px; }
         .log-entry .log-level { font-weight:600; width:56px; flex-shrink:0; text-transform:uppercase; }
         .log-entry .log-msg { color:var(--text-sec); flex:1; word-break:break-word; }
         .log-level.INFO { color:var(--accent); } .log-level.SUCCESS { color:var(--green); }
         .log-level.ERROR, .log-level.FAILED { color:var(--red); } .log-level.WARN { color:var(--yellow); }
-        .log-level.COPY { color:#c084fc; } .log-level.SKIP { color:var(--text-dim); }
+        .log-level.COPY { color:#c084fc; } .log-level.SKIP { color:var(--text-dim); } .log-level.TRADE { color:var(--cyan); }
+        .log-src.APP { color:var(--accent); } .log-src.ENGINE { color:#c084fc; } .log-src.FETCHER { color:var(--cyan); } .log-src.TRADER { color:var(--orange); }
+        .log-filter-bar { display:flex; gap:4px; margin-bottom:10px; }
+        .log-filter-btn { padding:4px 10px; font-size:11px; background:var(--bg-input); border:1px solid var(--border); border-radius:5px; color:var(--text-dim); cursor:pointer; transition:all .15s; font-weight:500; }
+        .log-filter-btn:hover, .log-filter-btn.active { border-color:var(--accent); color:var(--accent); }
 
         .ct-table { width:100%; border-collapse:collapse; }
         .ct-table th { text-align:left; padding:8px 10px; font-size:11px; font-weight:500; color:var(--text-dim); text-transform:uppercase; background:var(--bg-input); letter-spacing:.3px; }
@@ -176,6 +181,8 @@
         .toast.show { transform:translateY(0); opacity:1; }
         .toast.error { border-color:var(--red); } .toast.success { border-color:var(--green); }
 
+        .winrate-ring { width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; flex-shrink:0; }
+
         ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:#27272a; border-radius:3px; }
 
         @media (max-width:900px) {
@@ -194,10 +201,11 @@
             <div class="topbar-nav">
                 <button class="active" data-page="copy" onclick="switchPage('copy')">Dashboard</button>
                 <button data-page="trades" onclick="switchPage('trades')">Trade Feed</button>
-                <button data-page="log" onclick="switchPage('log')">Engine Log</button>
+                <button data-page="log" onclick="switchPage('log')">System Logs</button>
             </div>
         </div>
         <div class="topbar-right">
+            <div class="mock-badge" id="mock-badge" style="display:none;">MOCK</div>
             <div class="engine-badge off" id="engine-badge" onclick="toggleEngine()">
                 <div class="live-dot" id="engine-dot" style="background:var(--red);"></div>
                 <span id="engine-label">Engine Off</span>
@@ -226,19 +234,16 @@
         <div class="panel-center">
             <!-- Page: Dashboard -->
             <div class="page active" id="page-copy">
-                <!-- No wallet banner -->
                 <div class="info-banner warn" id="no-wallet-banner" style="display:none;">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                    <p>No wallet configured. Run <code>python setup_config.py</code> in your terminal to set up your private key and wallet address, then restart <code>python app.py</code>.</p>
+                    <p>No wallet configured. Run <code>python setup_config.py</code> in your terminal, then restart <code>python app.py</code>.</p>
                 </div>
 
                 <div class="grid-2">
                     <!-- Your Wallet -->
                     <div class="card">
                         <h3>Your Wallet</h3>
-                        <div id="wallet-status">
-                            <div style="padding:20px;text-align:center;"><div class="spinner"></div></div>
-                        </div>
+                        <div id="wallet-status"><div style="padding:20px;text-align:center;"><div class="spinner"></div></div></div>
                     </div>
                     <!-- Copy Trading Engine -->
                     <div class="card">
@@ -247,7 +252,12 @@
                             <div class="info"><h4>Master Switch</h4><p>Enable to start copying trades</p></div>
                             <div class="toggle" id="master-toggle" onclick="toggleMaster()"></div>
                         </div>
+                        <div class="toggle-row mock-row" style="margin-bottom:10px;">
+                            <div class="info"><h4>Mock Mode</h4><p>Simulate trades without real money</p></div>
+                            <div class="toggle" id="mock-toggle" onclick="toggleMock()"></div>
+                        </div>
                         <div class="status-row"><span class="label">Engine</span><span class="value" id="engine-status-text"><span class="dot off"></span>Stopped</span></div>
+                        <div class="status-row"><span class="label">Mode</span><span class="value" id="mode-display" style="color:var(--orange);">MOCK</span></div>
                         <div class="status-row"><span class="label">Traders Copied</span><span class="value" id="copy-trader-count">0</span></div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
@@ -262,7 +272,7 @@
                     <h3>Target Wallet Details</h3>
                     <div class="target-header">
                         <div class="target-avatar" id="target-avatar">?</div>
-                        <div>
+                        <div style="flex:1;">
                             <div style="font-size:18px;font-weight:600;display:flex;align-items:center;gap:6px;">
                                 <span id="target-name">--</span>
                                 <span class="badge-verified" id="target-verified" style="display:none;">&#10003;</span>
@@ -275,6 +285,7 @@
                             </div>
                             <div style="margin-top:6px;"><span class="wallet-mono"><span id="target-wallet">0x...</span><button onclick="copyAddr()">Copy</button></span></div>
                         </div>
+                        <div class="winrate-ring" id="target-winrate-ring">--</div>
                     </div>
                     <div id="target-bio" style="font-size:13px;color:var(--text-sec);margin-bottom:14px;"></div>
                     <div class="stats-grid" id="target-stats">
@@ -282,6 +293,7 @@
                         <div class="stat-card"><div class="val" id="ts-volume">$0</div><div class="lbl">Volume</div></div>
                         <div class="stat-card"><div class="val" id="ts-buys">0</div><div class="lbl">Buys</div></div>
                         <div class="stat-card"><div class="val" id="ts-sells">0</div><div class="lbl">Sells</div></div>
+                        <div class="stat-card"><div class="val" id="ts-winrate" style="color:var(--green);">0%</div><div class="lbl">Win Rate</div></div>
                         <div class="stat-card"><div class="val" id="ts-avgbuy">0c</div><div class="lbl">Avg Buy</div></div>
                         <div class="stat-card"><div class="val" id="ts-avgsell">0c</div><div class="lbl">Avg Sell</div></div>
                     </div>
@@ -292,14 +304,14 @@
                     <div id="target-markets"><div class="empty-state"><p>No data yet</p></div></div>
                 </div>
 
-                <!-- Recent Engine Log Preview -->
+                <!-- Recent Log Preview -->
                 <div class="card" style="margin-top:16px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                        <h3 style="margin-bottom:0;">Recent Engine Activity</h3>
-                        <button class="btn btn-sm btn-outline" onclick="switchPage('log')">View Full Log</button>
+                        <h3 style="margin-bottom:0;">Recent Activity</h3>
+                        <button class="btn btn-sm btn-outline" onclick="switchPage('log')">View Full Logs</button>
                     </div>
                     <div class="log-panel" id="recent-log" style="max-height:200px;">
-                        <div class="empty-state" style="padding:20px;"><p>No log entries yet. Engine activity appears here in real-time.</p></div>
+                        <div class="empty-state" style="padding:20px;"><p>No log entries yet. Activity from all processes appears here.</p></div>
                     </div>
                 </div>
 
@@ -326,14 +338,21 @@
                 </table>
             </div>
 
-            <!-- Page: Engine Log -->
+            <!-- Page: System Logs -->
             <div class="page" id="page-log">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <h2 style="font-size:16px;font-weight:600;">Copy Trading Engine Log</h2>
+                    <h2 style="font-size:16px;font-weight:600;">System Logs</h2>
                     <button class="btn btn-sm btn-outline" onclick="fetchLog()">Refresh</button>
                 </div>
-                <div class="log-panel" id="log-panel">
-                    <div class="empty-state"><p>No log entries yet. Start the engine to see activity.</p></div>
+                <div class="log-filter-bar">
+                    <button class="log-filter-btn active" data-src="ALL" onclick="filterLogs('ALL')">All</button>
+                    <button class="log-filter-btn" data-src="APP" onclick="filterLogs('APP')">App</button>
+                    <button class="log-filter-btn" data-src="ENGINE" onclick="filterLogs('ENGINE')">Engine</button>
+                    <button class="log-filter-btn" data-src="FETCHER" onclick="filterLogs('FETCHER')">Fetcher</button>
+                    <button class="log-filter-btn" data-src="TRADER" onclick="filterLogs('TRADER')">Copy Trader</button>
+                </div>
+                <div class="log-panel" id="log-panel" style="max-height:calc(100vh - 200px);">
+                    <div class="empty-state"><p>No log entries yet. Start the processes to see activity.</p></div>
                 </div>
             </div>
         </div>
@@ -343,12 +362,13 @@
 <div class="toast" id="toast"></div>
 
 <script>
-    let allTrades=[], currentFilter='all', selectedTraderId=null, currentDetail=null, config={}, logEntries=[];
+    let allTrades=[], currentFilter='all', selectedTraderId=null, currentDetail=null, config={}, logEntries=[], logSourceFilter='ALL';
 
     function formatTime(ts) { if(!ts)return '--'; const d=new Date(ts*1000),now=new Date(),diff=now-d; if(diff<60000)return 'Just now'; if(diff<3600000)return Math.floor(diff/60000)+'m ago'; if(diff<86400000)return Math.floor(diff/3600000)+'h ago'; return d.toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
     function formatUSD(n) { if(!n)return '$0'; n=parseFloat(n); if(n>=1e6)return '$'+(n/1e6).toFixed(2)+'M'; if(n>=1e3)return '$'+(n/1e3).toFixed(1)+'K'; return '$'+n.toFixed(2); }
     function truncAddr(a) { return a?a.slice(0,6)+'...'+a.slice(-4):''; }
     function showToast(msg,type='info') { const t=document.getElementById('toast'); t.textContent=msg; t.className='toast '+type+' show'; setTimeout(()=>t.classList.remove('show'),3500); }
+    function wrColor(wr) { if(wr>=60)return'var(--green)'; if(wr>=45)return'var(--yellow)'; return'var(--red)'; }
 
     function switchPage(p) { document.querySelectorAll('.topbar-nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===p)); document.querySelectorAll('.page').forEach(el=>el.classList.toggle('active',el.id==='page-'+p)); if(p==='log')fetchLog(); }
 
@@ -363,7 +383,9 @@
             const name=t.name||t.pseudonym||truncAddr(t.wallet_address), init=name.charAt(0).toUpperCase();
             const av=t.profile_image?`<img src="${t.profile_image}" alt="${name}" onerror="this.parentElement.innerHTML='${init}'">`  :init;
             const cb=t.copy_trading_enabled?'<span class="badge badge-copy">COPY</span>':'';
-            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)}</div></div><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
+            const wr=t.win_rate||0;
+            const wrHtml=wr>0?`<span class="winrate" style="color:${wrColor(wr)};">${wr}% WR</span>`:'';
+            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
         }).join('');
     }
     async function addTrader() { const v=document.getElementById('wallet-input').value.trim(); if(!v){showToast('Enter a wallet','error');return;} try{const r=await fetch('/api/traders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet_address:v})}); const res=await r.json(); if(r.ok){showToast('Wallet added!','success');document.getElementById('wallet-input').value='';fetchTraders();fetchStats();}else showToast(res.error,'error');}catch(e){showToast('Error','error');} }
@@ -385,11 +407,21 @@
         document.getElementById('target-scan-link').href='https://polygonscan.com/address/'+t.wallet_address;
         document.getElementById('target-wallet').textContent=t.wallet_address;
         document.getElementById('trader-copy-toggle').classList.toggle('active',!!t.copy_trading_enabled);
+
+        // Win rate ring
+        const wr=t.stats?.win_rate||t.win_rate||0;
+        const ring=document.getElementById('target-winrate-ring');
+        ring.textContent=wr+'%';
+        ring.style.color=wrColor(wr);
+        ring.style.border=`3px solid ${wrColor(wr)}`;
+
         if(t.stats){
             document.getElementById('ts-trades').textContent=(t.stats.total_trades||0).toLocaleString();
             document.getElementById('ts-volume').textContent=formatUSD(t.stats.volume_traded);
             document.getElementById('ts-buys').textContent=(t.stats.buy_count||0).toLocaleString();
             document.getElementById('ts-sells').textContent=(t.stats.sell_count||0).toLocaleString();
+            document.getElementById('ts-winrate').textContent=wr+'%';
+            document.getElementById('ts-winrate').style.color=wrColor(wr);
             document.getElementById('ts-avgbuy').textContent=(t.stats.avg_buy_price||0)+'c';
             document.getElementById('ts-avgsell').textContent=(t.stats.avg_sell_price||0)+'c';
         }
@@ -400,16 +432,24 @@
     async function fetchPositions(w) { try{const r=await fetch('/api/positions/'+w); const pos=await r.json(); const el=document.getElementById('target-positions'); if(Array.isArray(pos)&&pos.length) el.innerHTML=pos.map(p=>{const c=(p.cashPnl||0)>=0?'var(--green)':'var(--red)',s=(p.cashPnl||0)>=0?'+':''; return `<div class="position-item"><div class="position-icon">${p.icon?`<img src="${p.icon}" onerror="this.style.display='none'">`:''}</div><div class="position-info"><div class="title">${p.title||'...'}</div><div class="outcome">${p.outcome||''} &middot; ${p.size?parseFloat(p.size).toFixed(1)+' shares':''}</div></div><div class="position-pnl"><div class="size">${formatUSD(p.currentValue)}</div><div class="pnl" style="color:${c};">${s}${formatUSD(p.cashPnl)} (${s}${((p.percentPnl||0)*100).toFixed(1)}%)</div></div></div>`;}).join(''); else el.innerHTML='<div class="empty-state"><p>No open positions</p></div>';} catch(e){document.getElementById('target-positions').innerHTML='<div class="empty-state"><p>Could not fetch</p></div>';} }
     function copyAddr() { if(currentDetail)navigator.clipboard.writeText(currentDetail.wallet_address).then(()=>showToast('Copied!','success')); }
 
-    // ---- Copy Trading Toggles ----
+    // ---- Toggles ----
     async function toggleTraderCopy() { if(!currentDetail)return; const n=!currentDetail.copy_trading_enabled; try{const r=await fetch('/api/traders/'+currentDetail.id+'/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:n})}); if(r.ok){currentDetail.copy_trading_enabled=n;document.getElementById('trader-copy-toggle').classList.toggle('active',n);showToast(n?'Copy enabled':'Copy disabled',n?'success':'info');fetchTraders();}}catch(e){} }
     async function toggleMaster() { const n=!config.copy_trading_enabled; try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_trading_enabled:n})}); if(r.ok){config.copy_trading_enabled=n;document.getElementById('master-toggle').classList.toggle('active',n);updateStatus();showToast(n?'Copy trading enabled!':'Disabled',n?'success':'info');}}catch(e){} }
+    async function toggleMock() { const n=!config.mock_mode; try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mock_mode:n})}); if(r.ok){config.mock_mode=n;document.getElementById('mock-toggle').classList.toggle('active',n);updateMockUI();showToast(n?'Mock mode ON - no real trades':'Mock mode OFF - LIVE trading!',n?'info':'error');}}catch(e){} }
 
     function updateStatus() {
         const el=document.getElementById('engine-status-text');
-        if(config.engine_running&&config.copy_trading_enabled&&config.has_credentials) el.innerHTML='<span class="dot on"></span>Running';
-        else if(config.copy_trading_enabled&&!config.has_credentials) el.innerHTML='<span class="dot warn"></span>No Wallet';
-        else if(config.engine_running&&!config.copy_trading_enabled) el.innerHTML='<span class="dot warn"></span>Idle (disabled)';
+        if(config.engine_running&&config.copy_trading_enabled&&(config.has_credentials||config.mock_mode)) el.innerHTML='<span class="dot on"></span>Running';
+        else if(config.copy_trading_enabled&&!config.has_credentials&&!config.mock_mode) el.innerHTML='<span class="dot warn"></span>No Wallet';
+        else if(config.engine_running&&!config.copy_trading_enabled) el.innerHTML='<span class="dot warn"></span>Idle';
         else el.innerHTML='<span class="dot off"></span>Stopped';
+    }
+    function updateMockUI() {
+        const badge=document.getElementById('mock-badge');
+        const modeDisplay=document.getElementById('mode-display');
+        document.getElementById('mock-toggle').classList.toggle('active',!!config.mock_mode);
+        if(config.mock_mode){badge.style.display='flex';modeDisplay.textContent='MOCK';modeDisplay.style.color='var(--orange)';}
+        else{badge.style.display='none';modeDisplay.textContent='LIVE';modeDisplay.style.color='var(--green)';}
     }
 
     // ---- Engine Control ----
@@ -423,7 +463,7 @@
         else{badge.classList.remove('on');badge.classList.add('off');dot.style.background='var(--red)';label.textContent='Engine Off';}
     }
 
-    // ---- Config (read-only from Python config.json) ----
+    // ---- Config ----
     async function loadConfig() {
         try{const r=await fetch('/api/config'); config=await r.json();
         document.getElementById('copy-pct-display').textContent=(config.copy_percentage||10)+'%';
@@ -432,7 +472,7 @@
         document.getElementById('engine-copied').textContent=(config.trades_copied||0).toLocaleString();
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
         document.getElementById('last-check').textContent=config.last_check?new Date(config.last_check).toLocaleTimeString():'--';
-        updateStatus(); updateEngineUI(); renderWallet();
+        updateStatus(); updateEngineUI(); updateMockUI(); renderWallet();
         }catch(e){}
     }
     function renderWallet() {
@@ -441,7 +481,6 @@
         if(config.has_credentials){
             banner.style.display='none';
             const bal=config.usdc_balance!==null&&config.usdc_balance!==undefined?'$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'Loading...';
-            // Also update header balance
             if(config.usdc_balance!==null&&config.usdc_balance!==undefined){
                 document.getElementById('header-balance-amount').textContent='$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
                 document.getElementById('header-balance').style.display='flex';
@@ -453,6 +492,15 @@
                 <div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div>
                 <div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>
             `;
+        } else if(config.mock_mode) {
+            banner.style.display='none';
+            document.getElementById('header-balance').style.display='none';
+            el.innerHTML=`
+                <div class="status-row"><span class="label">Status</span><span class="value" style="color:var(--orange);"><span class="dot warn"></span>Mock Mode</span></div>
+                <div class="status-row"><span class="label">Wallet</span><span class="value" style="color:var(--text-dim);">Not required</span></div>
+                <div class="status-row"><span class="label">Balance</span><span class="value" style="color:var(--text-dim);">Simulated</span></div>
+                <div class="status-row"><span class="label">CLOB</span><span class="value" style="color:var(--text-dim);">Not needed</span></div>
+            `;
         } else {
             banner.style.display='flex';
             document.getElementById('header-balance').style.display='none';
@@ -461,7 +509,7 @@
                 <div style="margin-top:12px;">
                     <div class="info-banner info" style="margin-bottom:0;">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-                        <p>Run <code>python setup_config.py</code> in your terminal to configure your wallet and private key. Then restart the server.</p>
+                        <p>Run <code>python setup_config.py</code> to configure, or enable Mock Mode to test without a wallet.</p>
                     </div>
                 </div>
             `;
@@ -491,19 +539,26 @@
         try{const r=await fetch('/api/copy-trades'); const trades=await r.json();
         const el=document.getElementById('copy-trades-content');
         if(!trades.length){el.innerHTML='<div class="empty-state"><p>No copy trades yet</p></div>';return;}
-        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Trader</th><th>Market</th><th>Side</th><th>Original</th><th>Our Size</th><th>Status</th></tr></thead><tbody>${trades.map(t=>`<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="font-size:12px;">${t.trader_name||'--'}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.market_title||'--'}</td><td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td><td>${formatUSD(t.original_size)}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td><span style="color:${t.status==='SUCCESS'?'var(--green)':'var(--red)'};">${t.status}</span></td></tr>`).join('')}</tbody></table>`;}catch(e){}
+        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Trader</th><th>Market</th><th>Side</th><th>Original</th><th>Our Size</th><th>Status</th><th>Mode</th></tr></thead><tbody>${trades.map(t=>`<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="font-size:12px;">${t.trader_name||'--'}</td><td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.market_title||'--'}</td><td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td><td>${formatUSD(t.original_size)}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td><span style="color:${t.status==='SUCCESS'?'var(--green)':'var(--red)'};">${t.status}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td></tr>`).join('')}</tbody></table>`;}catch(e){}
     }
 
-    // ---- Engine Log ----
+    // ---- System Logs (unified) ----
+    function filterLogs(src) {
+        logSourceFilter=src;
+        document.querySelectorAll('.log-filter-btn').forEach(b=>b.classList.toggle('active',b.dataset.src===src));
+        renderLog();
+    }
     async function fetchLog() {
-        try{const r=await fetch('/api/copy-log?limit=200'); logEntries=await r.json(); renderLog(); renderRecentLog();}catch(e){}
+        try{const r=await fetch('/api/logs?limit=200'); logEntries=await r.json(); renderLog(); renderRecentLog();}catch(e){}
     }
     function renderLog() {
         const el=document.getElementById('log-panel');
-        if(!logEntries.length){el.innerHTML='<div class="empty-state"><p>No log entries yet. Start the engine to see activity.</p></div>';return;}
-        el.innerHTML=logEntries.map(l=>{
+        let filtered=logEntries;
+        if(logSourceFilter!=='ALL') filtered=logEntries.filter(l=>l.source===logSourceFilter);
+        if(!filtered.length){el.innerHTML='<div class="empty-state"><p>No log entries'+(logSourceFilter!=='ALL'?' for '+logSourceFilter:'')+'. Start the processes to see activity.</p></div>';return;}
+        el.innerHTML=filtered.map(l=>{
             const t=l.timestamp?new Date(l.timestamp).toLocaleTimeString():'--';
-            return `<div class="log-entry"><span class="log-time">${t}</span><span class="log-level ${l.level}">${l.level}</span><span class="log-msg">${l.message}${l.details?' <span style="color:var(--text-dim);">'+l.details+'</span>':''}</span></div>`;
+            return `<div class="log-entry"><span class="log-time">${t}</span><span class="log-src ${l.source||''}">${l.source||'?'}</span><span class="log-level ${l.level}">${l.level}</span><span class="log-msg">${l.message}${l.details?' <span style="color:var(--text-dim);">'+l.details+'</span>':''}</span></div>`;
         }).join('');
         el.scrollTop=0;
     }
@@ -513,7 +568,7 @@
         if(!recent.length){el.innerHTML='<div class="empty-state" style="padding:20px;"><p>No log entries yet</p></div>';return;}
         el.innerHTML=recent.map(l=>{
             const t=l.timestamp?new Date(l.timestamp).toLocaleTimeString():'--';
-            return `<div class="log-entry"><span class="log-time">${t}</span><span class="log-level ${l.level}">${l.level}</span><span class="log-msg">${l.message}</span></div>`;
+            return `<div class="log-entry"><span class="log-time">${t}</span><span class="log-src ${l.source||''}">${l.source||'?'}</span><span class="log-level ${l.level}">${l.level}</span><span class="log-msg">${l.message}</span></div>`;
         }).join('');
     }
     function appendLogEntries(newLogs) {
@@ -539,7 +594,7 @@
                 const lt=data.trades[data.trades.length-1];
                 showToast(`${lt.name||lt.pseudonym||(lt.wallet_address||'').slice(0,10)}: ${lt.side||'?'} ${lt.usdc_size?'$'+parseFloat(lt.usdc_size).toFixed(2):''} on ${(lt.title||'market').slice(0,40)}`,'success');
             }
-            if(data.type==='copy_log'&&data.logs?.length){appendLogEntries(data.logs);}
+            if(data.type==='logs'&&data.logs?.length){appendLogEntries(data.logs);}
             if(data.type==='copy_trades'&&data.trades?.length){fetchCopyTrades();}
             if(data.type==='heartbeat'){
                 dot.style.background='var(--green)';label.textContent='Live';
@@ -552,7 +607,6 @@
     // ---- Init ----
     fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();
     connectSSE();
-    // Refresh config (includes balance) every 30s
     setInterval(loadConfig,30000);
 </script>
 </body>

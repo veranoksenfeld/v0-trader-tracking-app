@@ -1,6 +1,7 @@
 """
 Polymarket Copy Trader - Flask Web Application
-Integrated copy trading engine runs as a background thread.
+Integrated copy trading engine with MOCK MODE for testing.
+Unified log system for app.py, fetcher.py, copy_trader.py.
 """
 from flask import Flask, render_template, jsonify, request, Response
 import sqlite3
@@ -9,6 +10,7 @@ import os
 import json
 import time
 import threading
+import random
 import requests as req
 
 app = Flask(__name__)
@@ -22,7 +24,6 @@ copy_engine = {
     'last_check': None,
     'trades_copied': 0,
     'trades_failed': 0,
-    'errors': [],
 }
 
 # Try to import py-clob-client
@@ -33,7 +34,7 @@ try:
     CLOB_AVAILABLE = True
 except ImportError:
     CLOB_AVAILABLE = False
-    print("WARNING: py-clob-client not installed. Copy trading disabled. Run: pip install py-clob-client")
+    print("WARNING: py-clob-client not installed. Live trading disabled. Run: pip install py-clob-client")
 
 
 # ---- Helpers ----
@@ -41,7 +42,7 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
-    return {'copy_trading_enabled': False, 'copy_percentage': 10, 'max_trade_size': 100, 'min_trade_size': 10}
+    return {'copy_trading_enabled': False, 'copy_percentage': 10, 'max_trade_size': 100, 'min_trade_size': 10, 'mock_mode': True}
 
 
 def save_config(config):
@@ -55,14 +56,14 @@ def get_db():
     return conn
 
 
-def log_event(level, message, details=''):
-    """Write a log entry to the copy_log table"""
+def log_event(source, level, message, details=''):
+    """Unified log: source is 'APP', 'ENGINE', 'FETCHER', or 'TRADER'"""
     try:
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute(
-            'INSERT INTO copy_log (timestamp, level, message, details) VALUES (?, ?, ?, ?)',
-            (datetime.now().isoformat(), level, message, details)
+            'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+            (datetime.now().isoformat(), source, level, message, details)
         )
         conn.commit()
         conn.close()
@@ -132,6 +133,7 @@ def init_db():
             our_size REAL,
             price REAL,
             status TEXT,
+            mock INTEGER DEFAULT 0,
             executed_at TEXT,
             response TEXT,
             FOREIGN KEY (original_trade_id) REFERENCES trades(id)
@@ -139,69 +141,191 @@ def init_db():
     ''')
 
     cursor.execute('''
-        CREATE TABLE IF NOT EXISTS copy_log (
+        CREATE TABLE IF NOT EXISTS unified_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'APP',
             level TEXT NOT NULL,
             message TEXT NOT NULL,
             details TEXT DEFAULT ''
         )
     ''')
 
-    # Migrate traders table if needed
-    cursor.execute("PRAGMA table_info(traders)")
-    columns = [col[1] for col in cursor.fetchall()]
-    for col, typ, default in [
-        ('copy_trading_enabled', 'INTEGER', '0'),
-        ('total_profit', 'REAL', '0'), ('win_rate', 'REAL', '0'),
-        ('total_trades', 'INTEGER', '0'), ('volume_traded', 'REAL', '0')
+    # Migrate old copy_log to unified_log
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='copy_log'")
+    if cursor.fetchone():
+        try:
+            cursor.execute("INSERT OR IGNORE INTO unified_log (timestamp, source, level, message, details) SELECT timestamp, 'ENGINE', level, message, details FROM copy_log")
+            conn.commit()
+        except Exception:
+            pass
+
+    # Migrate tables
+    for table, cols in [
+        ('traders', [
+            ('copy_trading_enabled', 'INTEGER', '0'),
+            ('total_profit', 'REAL', '0'), ('win_rate', 'REAL', '0'),
+            ('total_trades', 'INTEGER', '0'), ('volume_traded', 'REAL', '0')
+        ]),
+        ('copy_trades', [
+            ('trader_name', 'TEXT', "''"), ('market_title', 'TEXT', "''"),
+            ('side', 'TEXT', "''"), ('original_size', 'REAL', '0'),
+            ('our_size', 'REAL', '0'), ('price', 'REAL', '0'),
+            ('mock', 'INTEGER', '0'),
+        ]),
     ]:
-        if col not in columns:
-            cursor.execute(f'ALTER TABLE traders ADD COLUMN {col} {typ} DEFAULT {default}')
+        cursor.execute(f"PRAGMA table_info({table})")
+        existing = [col[1] for col in cursor.fetchall()]
+        for col, typ, default in cols:
+            if col not in existing:
+                try:
+                    cursor.execute(f'ALTER TABLE {table} ADD COLUMN {col} {typ} DEFAULT {default}')
+                except Exception:
+                    pass
 
     conn.commit()
     conn.close()
 
 
 # ============================================
-#  COPY TRADING ENGINE (background thread)
+#  WIN RATE CALCULATION
 # ============================================
 
-def get_clob_client(config):
-    """Initialize the Polymarket CLOB client"""
-    if not CLOB_AVAILABLE:
-        return None
-    private_key = config.get('private_key')
-    funder_address = config.get('funder_address')
-    sig_type = config.get('signature_type')
-    if sig_type is None:
-        sig_type = 1
-    sig_type = int(sig_type)
+def calculate_win_rate(trader_id):
+    """
+    Calculate win rate for a trader based on their sell trades.
+    A trade is a 'win' if the sell price > average buy price for same market.
+    Also counts: if bought at < 50c and outcome was correct (sell > buy).
+    """
+    conn = get_db()
+    cursor = conn.cursor()
 
-    if not private_key or not funder_address:
-        return None
-    try:
-        client = ClobClient(HOST_CLOB, key=private_key, chain_id=137, signature_type=sig_type, funder=funder_address)
-        creds = client.create_or_derive_api_creds()
-        if creds is None:
-            log_event('ERROR', 'CLOB auth failed', 'create_or_derive_api_creds returned None. Check private key + funder address.')
-            return None
-        client.set_api_creds(creds)
-        return client
-    except Exception as e:
-        log_event('ERROR', 'CLOB init failed', str(e))
-        return None
+    # Get all trades grouped by market (title + outcome)
+    cursor.execute('''
+        SELECT title, outcome, side, price, usdc_size
+        FROM trades WHERE trader_id = ? AND price IS NOT NULL
+        ORDER BY timestamp ASC
+    ''', (trader_id,))
+    trades = [dict(r) for r in cursor.fetchall()]
 
+    if not trades:
+        conn.close()
+        return 0.0
+
+    # Group by market
+    markets = {}
+    for t in trades:
+        key = (t['title'] or '') + '|' + (t['outcome'] or '')
+        if key not in markets:
+            markets[key] = {'buys': [], 'sells': []}
+        side = (t['side'] or '').upper()
+        if side == 'BUY':
+            markets[key]['buys'].append(t)
+        elif side == 'SELL':
+            markets[key]['sells'].append(t)
+
+    wins = 0
+    total_resolved = 0
+
+    for key, data in markets.items():
+        if not data['buys']:
+            continue
+        avg_buy = sum(b['price'] for b in data['buys']) / len(data['buys'])
+
+        if data['sells']:
+            avg_sell = sum(s['price'] for s in data['sells']) / len(data['sells'])
+            total_resolved += 1
+            if avg_sell > avg_buy:
+                wins += 1
+        elif avg_buy <= 0.3:
+            # Still holding a cheap position, count as pending (skip)
+            pass
+        elif avg_buy >= 0.85:
+            # Bought near certainty, likely a win
+            total_resolved += 1
+            wins += 1
+
+    win_rate = (wins / total_resolved * 100) if total_resolved > 0 else 0
+
+    # Update in DB
+    cursor.execute('UPDATE traders SET win_rate = ? WHERE id = ?', (round(win_rate, 1), trader_id))
+
+    # Also update total_trades and volume
+    cursor.execute('SELECT COUNT(*) as c, SUM(usdc_size) as v FROM trades WHERE trader_id = ?', (trader_id,))
+    row = cursor.fetchone()
+    cursor.execute('UPDATE traders SET total_trades = ?, volume_traded = ? WHERE id = ?',
+                   (row['c'] or 0, round(row['v'] or 0, 2), trader_id))
+
+    conn.commit()
+    conn.close()
+    return round(win_rate, 1)
+
+
+def refresh_all_win_rates():
+    """Recalculate win rates for all traders"""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT id FROM traders')
+    ids = [r['id'] for r in cursor.fetchall()]
+    conn.close()
+    for tid in ids:
+        calculate_win_rate(tid)
+
+
+# ============================================
+#  COPY TRADING ENGINE (background thread)
+# ============================================
 
 HOST_CLOB = "https://clob.polymarket.com"
 
 
-def execute_single_copy(client, trade, config):
-    """Execute a single copy trade"""
+def get_clob_client(config):
+    if not CLOB_AVAILABLE:
+        return None
+    pk = config.get('private_key')
+    funder = config.get('funder_address')
+    sig_type = config.get('signature_type')
+    if sig_type is None:
+        sig_type = 1
+    sig_type = int(sig_type)
+    if not pk or not funder:
+        return None
+    try:
+        client = ClobClient(HOST_CLOB, key=pk, chain_id=137, signature_type=sig_type, funder=funder)
+        creds = client.create_or_derive_api_creds()
+        if creds is None:
+            log_event('ENGINE', 'ERROR', 'CLOB auth failed', 'create_or_derive_api_creds returned None')
+            return None
+        client.set_api_creds(creds)
+        return client
+    except Exception as e:
+        log_event('ENGINE', 'ERROR', 'CLOB init failed', str(e))
+        return None
+
+
+def execute_mock_trade(trade, config):
+    """Simulate a copy trade -- no real money spent"""
+    copy_pct = config.get('copy_percentage', 10)
+    max_size = config.get('max_trade_size', 100)
+    original_size = float(trade.get('usdc_size') or 0)
+    our_size = min(original_size * (copy_pct / 100), max_size)
+    if our_size < 1:
+        return False, 'Size too small', 0
+
+    # Simulate success with ~90% probability
+    if random.random() < 0.9:
+        mock_id = f"MOCK-{random.randint(10000,99999)}"
+        return True, f'Mock order {mock_id} filled at {trade.get("price", 0)}', our_size
+    else:
+        return False, 'Mock: Simulated fill failure (slippage)', our_size
+
+
+def execute_live_trade(client, trade, config):
+    """Execute a real copy trade via CLOB"""
     try:
         copy_pct = config.get('copy_percentage', 10)
         max_size = config.get('max_trade_size', 100)
-        original_size = float(trade['usdc_size'] or 0)
+        original_size = float(trade.get('usdc_size') or 0)
         our_size = min(original_size * (copy_pct / 100), max_size)
         if our_size < 1:
             return False, 'Size too small', 0
@@ -211,9 +335,7 @@ def execute_single_copy(client, trade, config):
         if not token_id:
             return False, 'No token ID', 0
 
-        market_order = MarketOrderArgs(
-            token_id=token_id, amount=our_size, side=side, order_type=OrderType.FOK
-        )
+        market_order = MarketOrderArgs(token_id=token_id, amount=our_size, side=side, order_type=OrderType.FOK)
         signed_order = client.create_market_order(market_order)
         resp = client.post_order(signed_order, OrderType.FOK)
         return True, str(resp), our_size
@@ -222,19 +344,21 @@ def execute_single_copy(client, trade, config):
 
 
 def copy_trading_loop():
-    """Main copy trading loop -- runs in a background thread"""
+    """Main copy trading loop"""
     global copy_engine
-    log_event('INFO', 'Copy trading engine started')
+    log_event('ENGINE', 'INFO', 'Copy trading engine started')
     copy_engine['running'] = True
 
     while copy_engine['running']:
         try:
             config = load_config()
+            mock_mode = config.get('mock_mode', False)
+
             if not config.get('copy_trading_enabled'):
                 time.sleep(5)
                 continue
 
-            if not config.get('private_key') or not config.get('funder_address'):
+            if not mock_mode and (not config.get('private_key') or not config.get('funder_address')):
                 time.sleep(10)
                 continue
 
@@ -252,49 +376,56 @@ def copy_trading_loop():
             new_trades = [dict(row) for row in cursor.fetchall()]
             conn.close()
 
+            copy_engine['last_check'] = datetime.now().isoformat()
+
             if new_trades:
-                copy_engine['last_check'] = datetime.now().isoformat()
+                mode_label = 'MOCK' if mock_mode else 'LIVE'
+                log_event('ENGINE', 'INFO', f'Found {len(new_trades)} new trade(s) to copy [{mode_label}]')
 
-                # Check balance
-                balance = get_usdc_balance(config.get('funder_address', ''))
-                if balance < 1:
-                    log_event('WARN', f'Low balance: ${balance:.2f}', 'Need at least $1 USDC.e')
-                    time.sleep(30)
-                    continue
-
-                # Init CLOB client
-                client = get_clob_client(config)
-                if not client:
-                    log_event('ERROR', 'Could not connect to CLOB API', 'Check credentials')
-                    time.sleep(30)
-                    continue
+                # For live mode, check balance and init CLOB
+                client = None
+                if not mock_mode:
+                    balance = get_usdc_balance(config.get('funder_address', ''))
+                    if balance < 1:
+                        log_event('ENGINE', 'WARN', f'Low balance: ${balance:.2f}', 'Need at least $1 USDC.e')
+                        time.sleep(30)
+                        continue
+                    client = get_clob_client(config)
+                    if not client:
+                        log_event('ENGINE', 'ERROR', 'Could not connect to CLOB API', 'Check credentials')
+                        time.sleep(30)
+                        continue
 
                 for trade in new_trades:
                     min_size = config.get('min_trade_size', 10)
                     if float(trade.get('usdc_size', 0)) < min_size:
-                        log_event('SKIP', f'Trade too small: ${trade.get("usdc_size", 0):.2f}', f'Min: ${min_size}')
+                        log_event('ENGINE', 'SKIP', f'Trade too small: ${trade.get("usdc_size", 0):.2f}', f'Min: ${min_size}')
                         config['last_processed_timestamp'] = trade['timestamp']
                         save_config(config)
                         continue
 
-                    trader_name = trade.get('name') or trade.get('pseudonym') or trade.get('wallet_address', '')[:12]
+                    trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
                     market_title = trade.get('title', 'Unknown')
                     side_str = (trade.get('side') or '').upper()
 
-                    log_event('COPY', f'Copying {side_str} from {trader_name}', f'{market_title} | Original: ${trade.get("usdc_size", 0):.2f}')
+                    log_event('ENGINE', 'COPY', f'[{mode_label}] Copying {side_str} from {trader_name}', f'{market_title} | ${trade.get("usdc_size", 0):.2f}')
 
-                    success, response, our_size = execute_single_copy(client, trade, config)
+                    if mock_mode:
+                        success, response, our_size = execute_mock_trade(trade, config)
+                    else:
+                        success, response, our_size = execute_live_trade(client, trade, config)
 
-                    # Record in copy_trades table
+                    # Record in DB
                     conn = get_db()
                     cursor = conn.cursor()
                     cursor.execute('''
-                        INSERT INTO copy_trades (original_trade_id, trader_name, market_title, side, original_size, our_size, price, status, executed_at, response)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO copy_trades (original_trade_id, trader_name, market_title, side, original_size, our_size, price, status, mock, executed_at, response)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         trade['id'], trader_name, market_title, side_str,
                         trade.get('usdc_size', 0), our_size, trade.get('price', 0),
                         'SUCCESS' if success else 'FAILED',
+                        1 if mock_mode else 0,
                         datetime.now().isoformat(), response
                     ))
                     conn.commit()
@@ -302,27 +433,28 @@ def copy_trading_loop():
 
                     if success:
                         copy_engine['trades_copied'] += 1
-                        log_event('SUCCESS', f'Copied ${our_size:.2f} {side_str} on {market_title[:50]}', response[:200])
+                        log_event('ENGINE', 'SUCCESS', f'[{mode_label}] ${our_size:.2f} {side_str} on {market_title[:50]}', response[:200])
                     else:
                         copy_engine['trades_failed'] += 1
-                        log_event('FAILED', f'Failed to copy {side_str} on {market_title[:50]}', response[:200])
+                        log_event('ENGINE', 'FAILED', f'[{mode_label}] {side_str} on {market_title[:50]}', response[:200])
 
                     config['last_processed_timestamp'] = trade['timestamp']
                     save_config(config)
                     time.sleep(1)
-            else:
-                copy_engine['last_check'] = datetime.now().isoformat()
+
+            # Periodically refresh win rates
+            if random.random() < 0.05:
+                refresh_all_win_rates()
 
         except Exception as e:
-            log_event('ERROR', 'Engine error', str(e))
+            log_event('ENGINE', 'ERROR', 'Engine error', str(e))
 
         time.sleep(5)
 
-    log_event('INFO', 'Copy trading engine stopped')
+    log_event('ENGINE', 'INFO', 'Copy trading engine stopped')
 
 
 def start_copy_engine():
-    """Start the background copy trading thread"""
     global copy_engine
     if copy_engine['thread'] and copy_engine['thread'].is_alive():
         return
@@ -332,7 +464,6 @@ def start_copy_engine():
 
 
 def stop_copy_engine():
-    """Stop the background copy trading thread"""
     global copy_engine
     copy_engine['running'] = False
 
@@ -374,7 +505,7 @@ def add_trader():
     conn.commit()
     tid = cursor.lastrowid
     conn.close()
-    log_event('INFO', f'Started tracking wallet', wallet)
+    log_event('APP', 'INFO', f'Started tracking wallet', wallet)
     return jsonify({'success': True, 'trader_id': tid})
 
 
@@ -386,6 +517,7 @@ def delete_trader(trader_id):
     cursor.execute('DELETE FROM traders WHERE id = ?', (trader_id,))
     conn.commit()
     conn.close()
+    log_event('APP', 'INFO', f'Removed trader #{trader_id}')
     return jsonify({'success': True})
 
 
@@ -440,12 +572,15 @@ def toggle_copy_trading(trader_id):
     cursor.execute('UPDATE traders SET copy_trading_enabled = ? WHERE id = ?', (1 if enabled else 0, trader_id))
     conn.commit()
     conn.close()
-    log_event('INFO', f'Copy trading {"enabled" if enabled else "disabled"} for trader #{trader_id}')
+    log_event('APP', 'INFO', f'Copy trading {"enabled" if enabled else "disabled"} for trader #{trader_id}')
     return jsonify({'success': True, 'copy_trading_enabled': enabled})
 
 
 @app.route('/api/traders/<int:trader_id>/details', methods=['GET'])
 def get_trader_details(trader_id):
+    # Refresh win rate
+    wr = calculate_win_rate(trader_id)
+
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM traders WHERE id = ?', (trader_id,))
@@ -470,7 +605,8 @@ def get_trader_details(trader_id):
         'avg_buy_price': round((s['avg_buy_price'] or 0) * 100, 1),
         'avg_sell_price': round((s['avg_sell_price'] or 0) * 100, 1),
         'buy_count': s['buy_count'] or 0, 'sell_count': s['sell_count'] or 0,
-        'first_trade': s['first_trade'], 'last_trade': s['last_trade']
+        'first_trade': s['first_trade'], 'last_trade': s['last_trade'],
+        'win_rate': wr,
     }
     cursor.execute('''
         SELECT title, slug, icon, outcome, COUNT(*) as trade_count, SUM(usdc_size) as volume
@@ -486,8 +622,8 @@ def get_config():
     config = load_config()
     funder = config.get('funder_address', '')
     has_creds = bool(config.get('private_key') and funder)
-    
-    # Get balance if we have credentials
+    mock_mode = config.get('mock_mode', False)
+
     usdc_balance = None
     if has_creds:
         usdc_balance = get_usdc_balance(funder)
@@ -506,6 +642,7 @@ def get_config():
         'last_check': copy_engine['last_check'],
         'clob_available': CLOB_AVAILABLE,
         'signature_type': config.get('signature_type', 1),
+        'mock_mode': mock_mode,
     }
     return jsonify(safe)
 
@@ -522,6 +659,9 @@ def update_config():
         config['max_trade_size'] = max(1, float(data['max_trade_size']))
     if 'min_trade_size' in data:
         config['min_trade_size'] = max(0, float(data['min_trade_size']))
+    if 'mock_mode' in data:
+        config['mock_mode'] = bool(data['mock_mode'])
+        log_event('APP', 'INFO', f'Mock mode {"enabled" if data["mock_mode"] else "disabled"}')
     save_config(config)
     return jsonify({'success': True})
 
@@ -541,7 +681,7 @@ def update_credentials():
     config['funder_address'] = fa
     config['signature_type'] = int(st) if st is not None else 1
     save_config(config)
-    log_event('INFO', 'Credentials updated', f'Funder: {fa[:10]}...')
+    log_event('APP', 'INFO', 'Credentials updated', f'Funder: {fa[:10]}...')
     return jsonify({'success': True})
 
 
@@ -560,9 +700,7 @@ def get_copy_trades():
     conn = get_db()
     cursor = conn.cursor()
     try:
-        cursor.execute('''
-            SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 50
-        ''')
+        cursor.execute('SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 50')
         trades = [dict(row) for row in cursor.fetchall()]
     except Exception:
         trades = []
@@ -570,15 +708,35 @@ def get_copy_trades():
     return jsonify(trades)
 
 
+@app.route('/api/logs', methods=['GET'])
+def get_logs():
+    """Unified log endpoint for all sources"""
+    limit = request.args.get('limit', 200, type=int)
+    source = request.args.get('source', '')  # APP, ENGINE, FETCHER, TRADER, or '' for all
+    since_id = request.args.get('since_id', 0, type=int)
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        if source:
+            cursor.execute('SELECT * FROM unified_log WHERE id > ? AND source = ? ORDER BY id DESC LIMIT ?', (since_id, source, limit))
+        else:
+            cursor.execute('SELECT * FROM unified_log WHERE id > ? ORDER BY id DESC LIMIT ?', (since_id, limit))
+        logs = [dict(row) for row in cursor.fetchall()]
+    except Exception:
+        logs = []
+    conn.close()
+    return jsonify(logs)
+
+
+# Keep old endpoint for compatibility
 @app.route('/api/copy-log', methods=['GET'])
 def get_copy_log():
-    """Get copy trading event log"""
     limit = request.args.get('limit', 100, type=int)
     since_id = request.args.get('since_id', 0, type=int)
     conn = get_db()
     cursor = conn.cursor()
     try:
-        cursor.execute('SELECT * FROM copy_log WHERE id > ? ORDER BY id DESC LIMIT ?', (since_id, limit))
+        cursor.execute('SELECT * FROM unified_log WHERE id > ? ORDER BY id DESC LIMIT ?', (since_id, limit))
         logs = [dict(row) for row in cursor.fetchall()]
     except Exception:
         logs = []
@@ -627,7 +785,7 @@ def stream():
         if row and row['m']:
             last_trade_id = row['m']
         try:
-            cursor.execute('SELECT MAX(id) as m FROM copy_log')
+            cursor.execute('SELECT MAX(id) as m FROM unified_log')
             row = cursor.fetchone()
             if row and row['m']:
                 last_log_id = row['m']
@@ -659,13 +817,13 @@ def stream():
                     last_trade_id = new_trades[-1]['id']
                     yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
 
-                # New log entries
+                # New unified log entries
                 try:
-                    cursor.execute('SELECT * FROM copy_log WHERE id > ? ORDER BY id ASC', (last_log_id,))
+                    cursor.execute('SELECT * FROM unified_log WHERE id > ? ORDER BY id ASC', (last_log_id,))
                     new_logs = [dict(row) for row in cursor.fetchall()]
                     if new_logs:
                         last_log_id = new_logs[-1]['id']
-                        yield f"data: {json.dumps({'type': 'copy_log', 'logs': new_logs})}\n\n"
+                        yield f"data: {json.dumps({'type': 'logs', 'logs': new_logs})}\n\n"
                 except Exception:
                     pass
 
@@ -679,7 +837,7 @@ def stream():
                 except Exception:
                     pass
 
-                # Heartbeat with stats
+                # Heartbeat
                 cursor.execute('SELECT COUNT(*) as c FROM trades')
                 tc = cursor.fetchone()['c']
                 cursor.execute('SELECT COUNT(*) as c FROM traders')
@@ -696,11 +854,12 @@ def stream():
 
 if __name__ == '__main__':
     init_db()
-    # Auto-start the copy trading engine
     start_copy_engine()
+    log_event('APP', 'INFO', 'Server started', f'CLOB: {"available" if CLOB_AVAILABLE else "not installed"}')
     print("=" * 60)
     print("  Polymarket Copy Trader")
     print("  Dashboard: http://localhost:5000")
+    print(f"  CLOB client: {'Available' if CLOB_AVAILABLE else 'Not installed (mock only)'}")
     print("  Copy engine running in background")
     print("=" * 60)
     app.run(debug=False, port=5000, threaded=True)

@@ -11,6 +11,22 @@ import schedule
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
 
+
+def log_event(level, message, details=''):
+    """Write to unified_log table so the UI can display copy_trader events"""
+    try:
+        conn = sqlite3.connect(DATABASE)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+            (datetime.now().isoformat(), 'TRADER', level, message, details)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
 # Try to import py-clob-client
 try:
     from py_clob_client.client import ClobClient
@@ -78,9 +94,11 @@ def get_clob_client(config):
             return None
         client.set_api_creds(creds)
         print(f"[{datetime.now()}] CLOB client initialized successfully")
+        log_event('INFO', 'CLOB client initialized successfully')
         return client
     except Exception as e:
         print(f"ERROR: Failed to initialize CLOB client: {e}")
+        log_event('ERROR', 'CLOB client init failed', str(e))
         import traceback
         traceback.print_exc()
         return None
@@ -163,11 +181,13 @@ def execute_copy_trade(client, trade, config):
         print(f"[{datetime.now()}] Copy trade executed: {trade['side']} ${our_size:.2f} on {trade['title']}")
         print(f"  Token: {token_id[:20]}...")
         print(f"  Response: {resp}")
+        log_event('SUCCESS', f'Copy trade: {trade["side"]} ${our_size:.2f} on {trade["title"][:50]}', str(resp)[:200])
         
         return True, resp
         
     except Exception as e:
         print(f"ERROR executing copy trade: {e}")
+        log_event('FAILED', f'Copy trade failed', str(e))
         import traceback
         traceback.print_exc()
         return False, str(e)
