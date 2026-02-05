@@ -969,7 +969,12 @@
                     if (inBal) inBal.textContent = '--';
                     if (inAllow) inAllow.textContent = '--';
                     if (data.error && data.error !== 'No funder address configured') {
-                        showToast(data.error, 'error');
+                        // If error mentions signature_type, user has old app.py
+                        if (data.error.includes('signature_type')) {
+                            showToast('Please restart app.py - you are running an old version.', 'error');
+                        } else {
+                            showToast(data.error, 'error');
+                        }
                     }
                 }
             } catch(e) { console.error('fetchBalance error:', e); }
