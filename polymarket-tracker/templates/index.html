@@ -206,9 +206,9 @@
         </div>
         <div class="topbar-right">
             <div class="mock-badge" id="mock-badge" style="display:none;">MOCK</div>
-            <div class="engine-badge off" id="engine-badge" onclick="toggleEngine()">
-                <div class="live-dot" id="engine-dot" style="background:var(--red);"></div>
-                <span id="engine-label">Engine Off</span>
+            <div class="engine-badge on" id="engine-badge">
+                <div class="live-dot" id="engine-dot" style="background:var(--green);"></div>
+                <span id="engine-label">Engine Running</span>
             </div>
             <div class="live-badge" id="stream-status">
                 <div class="live-dot" id="stream-dot"></div>
@@ -248,15 +248,11 @@
                     <!-- Copy Trading Engine -->
                     <div class="card">
                         <h3>Copy Trading Engine</h3>
-                        <div class="toggle-row" style="margin-bottom:10px;">
-                            <div class="info"><h4>Master Switch</h4><p>Enable to start copying trades</p></div>
-                            <div class="toggle" id="master-toggle" onclick="toggleMaster()"></div>
-                        </div>
                         <div class="toggle-row mock-row" style="margin-bottom:10px;">
                             <div class="info"><h4>Mock Mode</h4><p>Simulate trades without real money</p></div>
                             <div class="toggle" id="mock-toggle" onclick="toggleMock()"></div>
                         </div>
-                        <div class="status-row"><span class="label">Engine</span><span class="value" id="engine-status-text"><span class="dot off"></span>Stopped</span></div>
+                        <div class="status-row"><span class="label">Engine</span><span class="value" id="engine-status-text"><span class="dot on"></span>Auto-running</span></div>
                         <div class="status-row"><span class="label">Mode</span><span class="value" id="mode-display" style="color:var(--orange);">MOCK</span></div>
                         <div class="status-row"><span class="label">Traders Copied</span><span class="value" id="copy-trader-count">0</span></div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
@@ -434,15 +430,40 @@
 
     // ---- Toggles ----
     async function toggleTraderCopy() { if(!currentDetail)return; const n=!currentDetail.copy_trading_enabled; try{const r=await fetch('/api/traders/'+currentDetail.id+'/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:n})}); if(r.ok){currentDetail.copy_trading_enabled=n;document.getElementById('trader-copy-toggle').classList.toggle('active',n);showToast(n?'Copy enabled':'Copy disabled',n?'success':'info');fetchTraders();}}catch(e){} }
-    async function toggleMaster() { const n=!config.copy_trading_enabled; try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_trading_enabled:n})}); if(r.ok){config.copy_trading_enabled=n;document.getElementById('master-toggle').classList.toggle('active',n);updateStatus();showToast(n?'Copy trading enabled!':'Disabled',n?'success':'info');}}catch(e){} }
-    async function toggleMock() { const n=!config.mock_mode; try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mock_mode:n})}); if(r.ok){config.mock_mode=n;document.getElementById('mock-toggle').classList.toggle('active',n);updateMockUI();showToast(n?'Mock mode ON - no real trades':'Mock mode OFF - LIVE trading!',n?'info':'error');}}catch(e){} }
+    async function toggleMock() {
+        const current = !!config.mock_mode;
+        const next = !current;
+        try {
+            const r = await fetch('/api/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({mock_mode: next})});
+            if (r.ok) {
+                config.mock_mode = next;
+                document.getElementById('mock-toggle').classList.toggle('active', next);
+                updateMockUI();
+                showToast(next ? 'Mock mode ON - simulating trades' : 'Mock mode OFF - LIVE trading!', next ? 'info' : 'success');
+                // Reload full config to stay in sync
+                setTimeout(loadConfig, 500);
+            }
+        } catch(e) { showToast('Error toggling mock mode', 'error'); }
+    }
 
     function updateStatus() {
         const el=document.getElementById('engine-status-text');
-        if(config.engine_running&&config.copy_trading_enabled&&(config.has_credentials||config.mock_mode)) el.innerHTML='<span class="dot on"></span>Running';
-        else if(config.copy_trading_enabled&&!config.has_credentials&&!config.mock_mode) el.innerHTML='<span class="dot warn"></span>No Wallet';
-        else if(config.engine_running&&!config.copy_trading_enabled) el.innerHTML='<span class="dot warn"></span>Idle';
-        else el.innerHTML='<span class="dot off"></span>Stopped';
+        const badge=document.getElementById('engine-badge'), dot=document.getElementById('engine-dot'), label=document.getElementById('engine-label');
+        if(config.engine_running) {
+            if(config.has_credentials||config.mock_mode) {
+                el.innerHTML='<span class="dot on"></span>Running' + (config.mock_mode ? ' (Mock)' : '');
+                badge.classList.remove('off'); badge.classList.add('on');
+                dot.style.background='var(--green)'; label.textContent='Engine Running';
+            } else {
+                el.innerHTML='<span class="dot warn"></span>Waiting for wallet';
+                badge.classList.remove('off'); badge.classList.add('on');
+                dot.style.background='var(--yellow)'; label.textContent='Waiting';
+            }
+        } else {
+            el.innerHTML='<span class="dot off"></span>Stopped';
+            badge.classList.remove('on'); badge.classList.add('off');
+            dot.style.background='var(--red)'; label.textContent='Engine Off';
+        }
     }
     function updateMockUI() {
         const badge=document.getElementById('mock-badge');
@@ -452,27 +473,17 @@
         else{badge.style.display='none';modeDisplay.textContent='LIVE';modeDisplay.style.color='var(--green)';}
     }
 
-    // ---- Engine Control ----
-    async function toggleEngine() {
-        const running=config.engine_running;
-        try{const r=await fetch('/api/engine/'+(running?'stop':'start'),{method:'POST'}); if(r.ok){config.engine_running=!running;updateEngineUI();showToast(running?'Engine stopped':'Engine started',running?'info':'success');}}catch(e){showToast('Error','error');}
-    }
-    function updateEngineUI() {
-        const badge=document.getElementById('engine-badge'), dot=document.getElementById('engine-dot'), label=document.getElementById('engine-label');
-        if(config.engine_running){badge.classList.remove('off');badge.classList.add('on');dot.style.background='var(--green)';label.textContent='Engine Running';}
-        else{badge.classList.remove('on');badge.classList.add('off');dot.style.background='var(--red)';label.textContent='Engine Off';}
-    }
+    // Engine status is auto-managed (no manual start/stop)
 
     // ---- Config ----
     async function loadConfig() {
         try{const r=await fetch('/api/config'); config=await r.json();
         document.getElementById('copy-pct-display').textContent=(config.copy_percentage||10)+'%';
         document.getElementById('copy-max-display').textContent='$'+(config.max_trade_size||100);
-        document.getElementById('master-toggle').classList.toggle('active',!!config.copy_trading_enabled);
         document.getElementById('engine-copied').textContent=(config.trades_copied||0).toLocaleString();
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
         document.getElementById('last-check').textContent=config.last_check?new Date(config.last_check).toLocaleTimeString():'--';
-        updateStatus(); updateEngineUI(); updateMockUI(); renderWallet();
+        updateStatus(); updateMockUI(); renderWallet();
         }catch(e){}
     }
     function renderWallet() {
@@ -598,7 +609,7 @@
             if(data.type==='copy_trades'&&data.trades?.length){fetchCopyTrades();}
             if(data.type==='heartbeat'){
                 dot.style.background='var(--green)';label.textContent='Live';
-                if(data.engine_running!==undefined){config.engine_running=data.engine_running;updateEngineUI();updateStatus();}
+                if(data.engine_running!==undefined){config.engine_running=data.engine_running;updateStatus();}
             }}catch(e){}
         };
         eventSource.onerror=()=>{dot.style.background='var(--red)';label.textContent='Reconnecting...';eventSource.close();sseRetries++;setTimeout(connectSSE,Math.min(1000*Math.pow(2,sseRetries),30000));};

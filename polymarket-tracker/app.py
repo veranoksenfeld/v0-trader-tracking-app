@@ -42,7 +42,7 @@ def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, 'r') as f:
             return json.load(f)
-    return {'copy_trading_enabled': False, 'copy_percentage': 10, 'max_trade_size': 100, 'min_trade_size': 10, 'mock_mode': True}
+    return {'copy_trading_enabled': True, 'copy_percentage': 10, 'max_trade_size': 100, 'min_trade_size': 10, 'mock_mode': False}
 
 
 def save_config(config):
@@ -354,10 +354,6 @@ def copy_trading_loop():
         try:
             config = load_config()
             mock_mode = config.get('mock_mode', False)
-
-            if not config.get('copy_trading_enabled'):
-                time.sleep(5)
-                continue
 
             if not mock_mode and (not config.get('private_key') or not config.get('funder_address')):
                 time.sleep(10)
@@ -692,12 +688,13 @@ def update_config():
     if 'min_trade_size' in data:
         config['min_trade_size'] = max(0, float(data['min_trade_size']))
     if 'mock_mode' in data:
-        config['mock_mode'] = bool(data['mock_mode'])
-        if data['mock_mode']:
-            # Reset last_processed_timestamp so existing trades get re-copied in mock mode
-            config['last_processed_timestamp'] = 0
+        new_mock = bool(data['mock_mode'])
+        old_mock = config.get('mock_mode', False)
+        config['mock_mode'] = new_mock
+        if new_mock and not old_mock:
+            # Only reset timestamps when switching FROM live TO mock
             config['last_mock_processed_timestamp'] = 0
-        log_event('APP', 'INFO', f'Mock mode {"enabled" if data["mock_mode"] else "disabled"}')
+        log_event('APP', 'INFO', f'Mock mode {"enabled" if new_mock else "disabled"}')
     save_config(config)
     return jsonify({'success': True})
 
