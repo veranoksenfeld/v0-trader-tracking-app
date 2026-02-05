@@ -1078,6 +1078,12 @@
                 </div>
             </div>
             <div class="header-actions">
+                <div id="header-balance" style="display: none; background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 8px 16px; display: none; align-items: center; gap: 12px;">
+                    <div style="text-align: right;">
+                        <div style="font-size: 16px; font-weight: 700; color: #22c55e;" id="header-balance-amount">$0.00</div>
+                        <div style="font-size: 10px; color: #71717a; text-transform: uppercase;">USDC</div>
+                    </div>
+                </div>
                 <button class="btn btn-api" onclick="openSettingsModal()" id="api-status-btn">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
@@ -1247,6 +1253,23 @@
                         <span id="credentials-text">Not configured</span>
                     </div>
 
+                    <!-- Wallet Balance Display -->
+                    <div id="balance-section" style="display: none; margin-bottom: 16px;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div style="background: #27272a; border-radius: 8px; padding: 16px; text-align: center;">
+                                <div style="font-size: 24px; font-weight: 700; color: #22c55e;" id="balance-usdc">$0.00</div>
+                                <div style="font-size: 12px; color: #71717a; text-transform: uppercase;">USDC Balance</div>
+                            </div>
+                            <div style="background: #27272a; border-radius: 8px; padding: 16px; text-align: center;">
+                                <div style="font-size: 24px; font-weight: 700; color: #a78bfa;" id="balance-allowance">$0.00</div>
+                                <div style="font-size: 12px; color: #71717a; text-transform: uppercase;">Allowance</div>
+                            </div>
+                        </div>
+                        <button class="btn btn-secondary" onclick="fetchBalance()" style="width: 100%; margin-top: 12px;">
+                            Refresh Balance
+                        </button>
+                    </div>
+
                     <div class="form-group">
                         <label>Private Key</label>
                         <input type="password" id="input-private-key" placeholder="Enter your wallet private key">
@@ -1325,6 +1348,8 @@
                 if (config.has_credentials) {
                     apiBtn.classList.add('connected');
                     apiBtnText.textContent = 'API Connected';
+                    // Fetch balance when credentials exist
+                    fetchBalance();
                 } else {
                     apiBtn.classList.remove('connected');
                     apiBtnText.textContent = 'Setup API Key';
@@ -1381,6 +1406,9 @@
                     credsText.textContent = 'Connected: ' + copyConfig.funder_address;
                     apiBtn.classList.add('connected');
                     apiBtnText.textContent = 'API Connected';
+                    // Show balance section and fetch balance
+                    document.getElementById('balance-section').style.display = 'block';
+                    fetchBalance();
                 } else {
                     credsDot.classList.remove('active');
                     credsStatus.classList.remove('connected');
@@ -1388,6 +1416,9 @@
                     credsText.textContent = 'Not configured - Enter your credentials below';
                     apiBtn.classList.remove('connected');
                     apiBtnText.textContent = 'Setup API Key';
+                    // Hide balance section
+                    document.getElementById('balance-section').style.display = 'none';
+                    document.getElementById('header-balance').style.display = 'none';
                 }
             } catch (error) {
                 console.error('Error loading config:', error);
@@ -1446,9 +1477,11 @@
                 });
                 
                 if (response.ok) {
-                    showToast('Credentials saved successfully!', 'success');
+                    showToast('Credentials saved successfully! Fetching balance...', 'success');
                     document.getElementById('input-private-key').value = '';
                     loadCopyConfig();
+                    // Auto-fetch balance after credentials are saved
+                    setTimeout(fetchBalance, 500);
                 } else {
                     const result = await response.json();
                     showToast(result.error || 'Failed to save credentials', 'error');
@@ -1482,6 +1515,60 @@
                 }
             } catch (error) {
                 showToast('Error saving settings', 'error');
+            }
+        }
+
+        // Fetch wallet balance
+        async function fetchBalance() {
+            try {
+                const response = await fetch('/api/balance');
+                const data = await response.json();
+                
+                const balanceSection = document.getElementById('balance-section');
+                const headerBalance = document.getElementById('header-balance');
+                
+                if (data.success && data.balance) {
+                    // Parse balance - the CLOB client returns balance in smallest unit (6 decimals for USDC)
+                    let usdcBalance = 0;
+                    let allowance = 0;
+                    
+                    if (typeof data.balance === 'object') {
+                        // Try common response shapes
+                        if (data.balance.balance !== undefined) {
+                            usdcBalance = parseFloat(data.balance.balance) / 1e6;
+                        } else if (data.balance.amount !== undefined) {
+                            usdcBalance = parseFloat(data.balance.amount) / 1e6;
+                        } else {
+                            // Try to use the raw value
+                            usdcBalance = parseFloat(Object.values(data.balance)[0] || 0) / 1e6;
+                        }
+                        
+                        if (data.balance.allowance !== undefined) {
+                            allowance = parseFloat(data.balance.allowance) / 1e6;
+                        }
+                    } else {
+                        usdcBalance = parseFloat(data.balance) / 1e6;
+                    }
+                    
+                    const formattedBalance = '$' + usdcBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    const formattedAllowance = '$' + allowance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    
+                    document.getElementById('balance-usdc').textContent = formattedBalance;
+                    document.getElementById('balance-allowance').textContent = formattedAllowance;
+                    document.getElementById('header-balance-amount').textContent = formattedBalance;
+                    
+                    balanceSection.style.display = 'block';
+                    headerBalance.style.display = 'flex';
+                } else {
+                    balanceSection.style.display = 'none';
+                    headerBalance.style.display = 'none';
+                    
+                    if (data.error && data.error !== 'No credentials configured') {
+                        showToast('Balance error: ' + data.error, 'error');
+                    }
+                }
+            } catch (error) {
+                console.error('Error fetching balance:', error);
             }
         }
 

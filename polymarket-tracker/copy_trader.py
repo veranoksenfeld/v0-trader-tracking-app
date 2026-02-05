@@ -76,6 +76,27 @@ def get_clob_client(config):
         return None
 
 
+def check_and_print_balance(client):
+    """Check and print the wallet balance"""
+    try:
+        balance_info = client.get_balance_allowance()
+        
+        if isinstance(balance_info, dict):
+            raw_balance = balance_info.get('balance', 0)
+            raw_allowance = balance_info.get('allowance', 0)
+            usdc_balance = float(raw_balance) / 1e6
+            usdc_allowance = float(raw_allowance) / 1e6
+            print(f"  USDC Balance:   ${usdc_balance:,.2f}")
+            print(f"  USDC Allowance: ${usdc_allowance:,.2f}")
+            return usdc_balance
+        else:
+            print(f"  Balance info: {balance_info}")
+            return 0
+    except Exception as e:
+        print(f"  Could not fetch balance: {e}")
+        return 0
+
+
 def execute_copy_trade(client, trade, config):
     """Execute a copy trade based on a tracked trader's trade"""
     try:
@@ -166,6 +187,13 @@ def check_and_copy_trades():
     client = get_clob_client(config)
     if not client:
         print("ERROR: Could not initialize CLOB client")
+        conn.close()
+        return
+    
+    # Check balance before executing trades
+    balance = check_and_print_balance(client)
+    if balance < 1:
+        print("WARNING: Insufficient USDC balance to copy trades. Skipping.")
         conn.close()
         return
     
@@ -266,6 +294,17 @@ def run_copy_trader():
         print("\nWARNING: No private key configured!")
         print("Copy trading will not execute until you configure your credentials.")
         print("Use the web interface at http://localhost:5000 to configure.")
+    else:
+        # Show balance on startup
+        print("\nConnecting to Polymarket CLOB API...")
+        client = get_clob_client(config)
+        if client:
+            print("Wallet balance:")
+            balance = check_and_print_balance(client)
+            if balance < 1:
+                print("\n  WARNING: Low USDC balance. Deposit USDC to your funder address to copy trade.")
+        else:
+            print("ERROR: Could not connect to CLOB API. Check your credentials.")
     
     print(f"\n[{datetime.now()}] Copy trader running. Checking every 30 seconds.")
     print("Press Ctrl+C to stop.\n")
