@@ -53,7 +53,10 @@ def get_clob_client(config):
     
     private_key = config.get('private_key')
     funder_address = config.get('funder_address')
-    signature_type = config.get('signature_type', 1)  # 0=EOA, 1=email/Magic, 2=browser wallet proxy
+    signature_type = config.get('signature_type')
+    if signature_type is None:
+        signature_type = 1
+    signature_type = int(signature_type)  # 0=EOA, 1=email/Magic, 2=browser wallet proxy
     
     if not private_key or not funder_address:
         print("ERROR: Missing private_key or funder_address in config")

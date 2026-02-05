@@ -365,11 +365,16 @@ def get_balance():
     try:
         from py_clob_client.client import ClobClient
         
+        sig_type = config.get('signature_type')
+        if sig_type is None:
+            sig_type = 1
+        sig_type = int(sig_type)
+        
         client = ClobClient(
             "https://clob.polymarket.com",
             key=config['private_key'],
             chain_id=137,
-            signature_type=config.get('signature_type', 1),
+            signature_type=sig_type,
             funder=config['funder_address']
         )
         client.set_api_creds(client.create_or_derive_api_creds())
@@ -383,7 +388,7 @@ def get_balance():
             'funder_address': config['funder_address']
         })
     except ImportError:
-        return jsonify({'error': 'py-clob-client not installed', 'balance': None})
+        return jsonify({'error': 'py-clob-client not installed. Run: pip install py-clob-client', 'balance': None})
     except Exception as e:
         return jsonify({'error': str(e), 'balance': None})
 
