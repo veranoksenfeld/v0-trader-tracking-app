@@ -1,11 +1,12 @@
 """
 Polymarket Trader Tracker - Flask Web Application
 """
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, Response
 import sqlite3
 from datetime import datetime
 import os
 import json
+import time
 
 app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
@@ -410,6 +411,55 @@ def get_copy_trades():
     trades = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return jsonify(trades)
+
+
+@app.route('/api/stream')
+def stream():
+    """Server-Sent Events endpoint for real-time UI updates.
+    Checks the DB every 2 seconds for new trades and pushes them to the browser."""
+    def event_stream():
+        last_trade_id = 0
+        # Get current max trade id
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('SELECT MAX(id) as max_id FROM trades')
+        row = cursor.fetchone()
+        if row and row['max_id']:
+            last_trade_id = row['max_id']
+        conn.close()
+
+        while True:
+            time.sleep(2)
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym,
+                           tr.profile_image, tr.verified_badge
+                    FROM trades t
+                    JOIN traders tr ON t.trader_id = tr.id
+                    WHERE t.id > ?
+                    ORDER BY t.id ASC
+                ''', (last_trade_id,))
+                new_trades = [dict(row) for row in cursor.fetchall()]
+
+                if new_trades:
+                    last_trade_id = new_trades[-1]['id']
+                    yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
+
+                # Also send stats
+                cursor.execute('SELECT COUNT(*) as c FROM trades')
+                trade_count = cursor.fetchone()['c']
+                cursor.execute('SELECT COUNT(*) as c FROM traders')
+                trader_count = cursor.fetchone()['c']
+                yield f"data: {json.dumps({'type': 'heartbeat', 'trade_count': trade_count, 'trader_count': trader_count})}\n\n"
+
+                conn.close()
+            except Exception:
+                yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
+
+    return Response(event_stream(), mimetype='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
 if __name__ == '__main__':

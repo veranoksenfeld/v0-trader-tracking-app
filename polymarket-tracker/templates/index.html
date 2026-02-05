@@ -460,6 +460,20 @@
             50% { opacity: 0.5; }
         }
 
+        @keyframes flash-new {
+            0% { background: rgba(99, 102, 241, 0.3); }
+            100% { background: transparent; }
+        }
+
+        .trade-row.new-trade {
+            animation: flash-new 2s ease-out;
+        }
+
+        .stream-disconnected .refresh-dot {
+            background: #ef4444 !important;
+            animation: none;
+        }
+
         @media (max-width: 1024px) {
             .main-content {
                 grid-template-columns: 1fr;
@@ -1072,9 +1086,9 @@
                     <div class="stat-value" id="stat-volume">$0</div>
                     <div class="stat-label">Volume</div>
                 </div>
-                <div class="refresh-indicator">
-                    <div class="refresh-dot"></div>
-                    <span>Auto-refresh: 30s</span>
+                <div class="refresh-indicator" id="stream-status">
+                    <div class="refresh-dot" id="stream-dot" style="background: #eab308;"></div>
+                    <span id="stream-label">Connecting...</span>
                 </div>
             </div>
             <div class="header-actions">
@@ -2016,12 +2030,93 @@
         fetchTrades();
         checkApiStatus();
 
-        // Auto-refresh every 30 seconds
+        // ----- Real-time Server-Sent Events (SSE) -----
+        let eventSource = null;
+        let sseRetries = 0;
+
+        function connectSSE() {
+            const dot = document.getElementById('stream-dot');
+            const label = document.getElementById('stream-label');
+
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            dot.style.background = '#eab308';
+            label.textContent = 'Connecting...';
+
+            eventSource = new EventSource('/api/stream');
+
+            eventSource.onopen = function() {
+                dot.style.background = '#22c55e';
+                label.textContent = 'Live';
+                sseRetries = 0;
+            };
+
+            eventSource.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+
+                    if (data.type === 'new_trades' && data.trades && data.trades.length > 0) {
+                        // New trades arrived - refresh everything
+                        dot.style.background = '#6366f1';
+                        label.textContent = 'New trade!';
+                        setTimeout(() => {
+                            dot.style.background = '#22c55e';
+                            label.textContent = 'Live';
+                        }, 2000);
+
+                        fetchStats();
+                        fetchTraders();
+                        fetchTrades();
+
+                        // Show toast notification
+                        const count = data.trades.length;
+                        const latest = data.trades[data.trades.length - 1];
+                        const traderName = latest.name || latest.pseudonym || latest.wallet_address.slice(0, 10) + '...';
+                        const side = latest.side || '?';
+                        const amount = latest.usdc_size ? '$' + parseFloat(latest.usdc_size).toFixed(2) : '';
+                        showToast(`${traderName}: ${side} ${amount} on ${(latest.title || 'market').slice(0, 40)}`, 'success');
+                    }
+
+                    if (data.type === 'heartbeat') {
+                        // Keep status green
+                        dot.style.background = '#22c55e';
+                        label.textContent = 'Live';
+
+                        // Update stat counters if provided
+                        if (data.trade_count !== undefined) {
+                            document.getElementById('stat-trades').textContent = data.trade_count.toLocaleString();
+                        }
+                        if (data.trader_count !== undefined) {
+                            document.getElementById('stat-traders').textContent = data.trader_count.toLocaleString();
+                        }
+                    }
+                } catch (e) {
+                    console.error('SSE parse error:', e);
+                }
+            };
+
+            eventSource.onerror = function() {
+                dot.style.background = '#ef4444';
+                label.textContent = 'Reconnecting...';
+                eventSource.close();
+
+                // Exponential backoff reconnect
+                sseRetries++;
+                const delay = Math.min(1000 * Math.pow(2, sseRetries), 30000);
+                console.log('SSE disconnected, reconnecting in ' + delay + 'ms');
+                setTimeout(connectSSE, delay);
+            };
+        }
+
+        // Start SSE connection
+        connectSSE();
+
+        // Fallback: light refresh every 15s in case SSE misses something
         setInterval(() => {
             fetchStats();
-            fetchTraders();
-            fetchTrades();
-        }, 30000);
+        }, 15000);
     </script>
 </body>
 </html>
