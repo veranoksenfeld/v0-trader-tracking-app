@@ -309,15 +309,16 @@ def execute_mock_trade(trade, config):
     max_size = config.get('max_trade_size', 100)
     original_size = float(trade.get('usdc_size') or 0)
     our_size = min(original_size * (copy_pct / 100), max_size)
-    if our_size < 1:
-        return False, 'Size too small', 0
+    # In mock mode, always set a minimum mock size for testing
+    if our_size < 0.01:
+        our_size = round(random.uniform(1, 10), 2)
 
     # Simulate success with ~90% probability
     if random.random() < 0.9:
         mock_id = f"MOCK-{random.randint(10000,99999)}"
-        return True, f'Mock order {mock_id} filled at {trade.get("price", 0)}', our_size
+        return True, f'Mock order {mock_id} filled at {trade.get("price", 0)}', round(our_size, 2)
     else:
-        return False, 'Mock: Simulated fill failure (slippage)', our_size
+        return False, 'Mock: Simulated fill failure (slippage)', round(our_size, 2)
 
 
 def execute_live_trade(client, trade, config):
@@ -362,85 +363,116 @@ def copy_trading_loop():
                 time.sleep(10)
                 continue
 
-            last_processed = config.get('last_processed_timestamp', 0)
+            # Use separate timestamps for mock vs live so toggling mock doesn't skip live trades
+            if mock_mode:
+                last_processed = config.get('last_mock_processed_timestamp', 0)
+            else:
+                last_processed = config.get('last_processed_timestamp', 0)
 
             conn = get_db()
             cursor = conn.cursor()
-            cursor.execute('''
-                SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
-                FROM trades t
-                JOIN traders tr ON t.trader_id = tr.id
-                WHERE tr.copy_trading_enabled = 1 AND t.timestamp > ?
-                ORDER BY t.timestamp ASC
-            ''', (last_processed,))
+
+            # In mock mode, check if any copy-enabled traders exist; if not, use ALL traders
+            cursor.execute('SELECT COUNT(*) as c FROM traders WHERE copy_trading_enabled = 1')
+            copy_enabled_count = cursor.fetchone()['c']
+
+            if copy_enabled_count > 0:
+                cursor.execute('''
+                    SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
+                    FROM trades t
+                    JOIN traders tr ON t.trader_id = tr.id
+                    WHERE tr.copy_trading_enabled = 1 AND t.timestamp > ?
+                    ORDER BY t.timestamp ASC LIMIT 20
+                ''', (last_processed,))
+            elif mock_mode:
+                # Mock mode with no copy-enabled traders: use all traders for demo
+                cursor.execute('''
+                    SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
+                    FROM trades t
+                    JOIN traders tr ON t.trader_id = tr.id
+                    WHERE t.timestamp > ?
+                    ORDER BY t.timestamp ASC LIMIT 20
+                ''', (last_processed,))
+            else:
+                cursor.execute('SELECT 1 WHERE 0')  # empty result for live mode
+
             new_trades = [dict(row) for row in cursor.fetchall()]
             conn.close()
 
             copy_engine['last_check'] = datetime.now().isoformat()
 
-            if new_trades:
-                mode_label = 'MOCK' if mock_mode else 'LIVE'
-                log_event('ENGINE', 'INFO', f'Found {len(new_trades)} new trade(s) to copy [{mode_label}]')
+            if not new_trades:
+                time.sleep(5)
+                continue
 
-                # For live mode, check balance and init CLOB
-                client = None
-                if not mock_mode:
-                    balance = get_usdc_balance(config.get('funder_address', ''))
-                    if balance < 1:
-                        log_event('ENGINE', 'WARN', f'Low balance: ${balance:.2f}', 'Need at least $1 USDC.e')
-                        time.sleep(30)
-                        continue
-                    client = get_clob_client(config)
-                    if not client:
-                        log_event('ENGINE', 'ERROR', 'Could not connect to CLOB API', 'Check credentials')
-                        time.sleep(30)
-                        continue
+            mode_label = 'MOCK' if mock_mode else 'LIVE'
+            log_event('ENGINE', 'INFO', f'Found {len(new_trades)} trade(s) to copy [{mode_label}]')
 
-                for trade in new_trades:
-                    min_size = config.get('min_trade_size', 10)
-                    if float(trade.get('usdc_size', 0)) < min_size:
-                        log_event('ENGINE', 'SKIP', f'Trade too small: ${trade.get("usdc_size", 0):.2f}', f'Min: ${min_size}')
-                        config['last_processed_timestamp'] = trade['timestamp']
-                        save_config(config)
-                        continue
+            # For live mode, check balance and init CLOB
+            client = None
+            if not mock_mode:
+                balance = get_usdc_balance(config.get('funder_address', ''))
+                if balance < 1:
+                    log_event('ENGINE', 'WARN', f'Low balance: ${balance:.2f}', 'Need at least $1 USDC.e')
+                    time.sleep(30)
+                    continue
+                client = get_clob_client(config)
+                if not client:
+                    log_event('ENGINE', 'ERROR', 'Could not connect to CLOB API', 'Check credentials')
+                    time.sleep(30)
+                    continue
 
-                    trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
-                    market_title = trade.get('title', 'Unknown')
-                    side_str = (trade.get('side') or '').upper()
+            for trade in new_trades:
+                min_size = config.get('min_trade_size', 10)
+                trade_size = float(trade.get('usdc_size') or 0)
 
-                    log_event('ENGINE', 'COPY', f'[{mode_label}] Copying {side_str} from {trader_name}', f'{market_title} | ${trade.get("usdc_size", 0):.2f}')
+                # In mock mode, allow smaller trades for testing
+                effective_min = 0.01 if mock_mode else min_size
 
-                    if mock_mode:
-                        success, response, our_size = execute_mock_trade(trade, config)
-                    else:
-                        success, response, our_size = execute_live_trade(client, trade, config)
-
-                    # Record in DB
-                    conn = get_db()
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT INTO copy_trades (original_trade_id, trader_name, market_title, side, original_size, our_size, price, status, mock, executed_at, response)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        trade['id'], trader_name, market_title, side_str,
-                        trade.get('usdc_size', 0), our_size, trade.get('price', 0),
-                        'SUCCESS' if success else 'FAILED',
-                        1 if mock_mode else 0,
-                        datetime.now().isoformat(), response
-                    ))
-                    conn.commit()
-                    conn.close()
-
-                    if success:
-                        copy_engine['trades_copied'] += 1
-                        log_event('ENGINE', 'SUCCESS', f'[{mode_label}] ${our_size:.2f} {side_str} on {market_title[:50]}', response[:200])
-                    else:
-                        copy_engine['trades_failed'] += 1
-                        log_event('ENGINE', 'FAILED', f'[{mode_label}] {side_str} on {market_title[:50]}', response[:200])
-
-                    config['last_processed_timestamp'] = trade['timestamp']
+                if trade_size < effective_min:
+                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                    config[ts_key] = trade['timestamp']
                     save_config(config)
-                    time.sleep(1)
+                    continue
+
+                trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
+                market_title = trade.get('title', 'Unknown')
+                side_str = (trade.get('side') or '').upper()
+
+                log_event('ENGINE', 'COPY', f'[{mode_label}] Copying {side_str} from {trader_name}', f'{market_title} | ${trade_size:.2f}')
+
+                if mock_mode:
+                    success, response, our_size = execute_mock_trade(trade, config)
+                else:
+                    success, response, our_size = execute_live_trade(client, trade, config)
+
+                # Record in DB
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, side, original_size, our_size, price, status, mock, executed_at, response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    trade['id'], trader_name, market_title, side_str,
+                    trade_size, our_size, trade.get('price', 0),
+                    'SUCCESS' if success else 'FAILED',
+                    1 if mock_mode else 0,
+                    datetime.now().isoformat(), response
+                ))
+                conn.commit()
+                conn.close()
+
+                if success:
+                    copy_engine['trades_copied'] += 1
+                    log_event('ENGINE', 'SUCCESS', f'[{mode_label}] ${our_size:.2f} {side_str} on {market_title[:50]}', response[:200])
+                else:
+                    copy_engine['trades_failed'] += 1
+                    log_event('ENGINE', 'FAILED', f'[{mode_label}] {side_str} on {market_title[:50]}', response[:200])
+
+                ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                config[ts_key] = trade['timestamp']
+                save_config(config)
+                time.sleep(0.5 if mock_mode else 1)
 
             # Periodically refresh win rates
             if random.random() < 0.05:
@@ -661,6 +693,10 @@ def update_config():
         config['min_trade_size'] = max(0, float(data['min_trade_size']))
     if 'mock_mode' in data:
         config['mock_mode'] = bool(data['mock_mode'])
+        if data['mock_mode']:
+            # Reset last_processed_timestamp so existing trades get re-copied in mock mode
+            config['last_processed_timestamp'] = 0
+            config['last_mock_processed_timestamp'] = 0
         log_event('APP', 'INFO', f'Mock mode {"enabled" if data["mock_mode"] else "disabled"}')
     save_config(config)
     return jsonify({'success': True})
