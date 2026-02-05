@@ -484,18 +484,28 @@ def get_trader_details(trader_id):
 @app.route('/api/config', methods=['GET'])
 def get_config():
     config = load_config()
+    funder = config.get('funder_address', '')
+    has_creds = bool(config.get('private_key') and funder)
+    
+    # Get balance if we have credentials
+    usdc_balance = None
+    if has_creds:
+        usdc_balance = get_usdc_balance(funder)
+
     safe = {
         'copy_trading_enabled': config.get('copy_trading_enabled', False),
         'copy_percentage': config.get('copy_percentage', 10),
         'max_trade_size': config.get('max_trade_size', 100),
         'min_trade_size': config.get('min_trade_size', 10),
-        'has_credentials': bool(config.get('private_key') and config.get('funder_address')),
-        'funder_address': config.get('funder_address', ''),
+        'has_credentials': has_creds,
+        'funder_address': funder,
+        'usdc_balance': round(usdc_balance, 2) if usdc_balance is not None else None,
         'engine_running': copy_engine['running'] and copy_engine['thread'] is not None and copy_engine['thread'].is_alive(),
         'trades_copied': copy_engine['trades_copied'],
         'trades_failed': copy_engine['trades_failed'],
         'last_check': copy_engine['last_check'],
         'clob_available': CLOB_AVAILABLE,
+        'signature_type': config.get('signature_type', 1),
     }
     return jsonify(safe)
 

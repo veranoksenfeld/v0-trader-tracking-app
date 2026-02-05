@@ -1,0 +1,166 @@
+"""
+Polymarket Copy Trader - Configuration Setup
+Run this script once to configure your wallet and copy trading settings.
+All settings are saved to config.json.
+
+Usage:
+    python setup_config.py
+"""
+import json
+import os
+import getpass
+
+CONFIG_FILE = 'config.json'
+
+
+def load_config():
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+
+def save_config(config):
+    with open(CONFIG_FILE, 'w') as f:
+        json.dump(config, f, indent=2)
+
+
+def get_usdc_balance(funder_address):
+    """Check USDC.e balance via Polygon RPC"""
+    import requests
+    USDC_E = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
+    padded = funder_address.replace('0x', '').lower().zfill(64)
+    call_data = '0x70a08231' + padded
+    for rpc in ['https://polygon-rpc.com', 'https://rpc.ankr.com/polygon', 'https://polygon.llamarpc.com']:
+        try:
+            resp = requests.post(rpc, json={
+                'jsonrpc': '2.0', 'method': 'eth_call',
+                'params': [{'to': USDC_E, 'data': call_data}, 'latest'], 'id': 1
+            }, timeout=10)
+            result = resp.json()
+            if 'result' in result and result['result'] != '0x':
+                return int(result['result'], 16) / 1e6
+        except Exception:
+            continue
+    return 0
+
+
+def setup():
+    print("=" * 60)
+    print("  Polymarket Copy Trader - Setup")
+    print("=" * 60)
+    print()
+
+    config = load_config()
+
+    # Show current config
+    if config.get('private_key'):
+        print(f"  Current wallet:  {config.get('funder_address', 'Not set')}")
+        bal = get_usdc_balance(config.get('funder_address', ''))
+        print(f"  USDC.e Balance:  ${bal:,.2f}")
+        print(f"  Copy enabled:    {'Yes' if config.get('copy_trading_enabled') else 'No'}")
+        print(f"  Copy percentage: {config.get('copy_percentage', 10)}%")
+        print(f"  Max trade size:  ${config.get('max_trade_size', 100)}")
+        print(f"  Min trade size:  ${config.get('min_trade_size', 10)}")
+        print()
+        reconfigure = input("Reconfigure? (y/N): ").strip().lower()
+        if reconfigure != 'y':
+            print("No changes made.")
+            return
+        print()
+
+    # Private key
+    print("--- Wallet Configuration ---")
+    print("Get your private key from: https://reveal.polymarket.com")
+    print()
+    pk = getpass.getpass("  Private Key (hidden): ").strip()
+    if not pk:
+        print("ERROR: Private key is required.")
+        return
+
+    # Funder address
+    funder = input("  Funder/Proxy Address (0x...): ").strip().lower()
+    if not funder.startswith('0x') or len(funder) != 42:
+        print("ERROR: Invalid address. Must be 0x + 40 hex characters.")
+        return
+
+    # Signature type
+    print()
+    print("  Signature type:")
+    print("    1 = Email / Magic Wallet (default)")
+    print("    2 = Browser Wallet (MetaMask, etc.)")
+    sig_input = input("  Select (1/2) [1]: ").strip()
+    sig_type = int(sig_input) if sig_input in ('1', '2') else 1
+
+    # Copy trading settings
+    print()
+    print("--- Copy Trading Settings ---")
+
+    cp_input = input(f"  Copy percentage (1-100) [{config.get('copy_percentage', 10)}]: ").strip()
+    copy_pct = int(cp_input) if cp_input else config.get('copy_percentage', 10)
+    copy_pct = max(1, min(100, copy_pct))
+
+    mx_input = input(f"  Max trade size USD [{config.get('max_trade_size', 100)}]: ").strip()
+    max_size = float(mx_input) if mx_input else config.get('max_trade_size', 100)
+
+    mn_input = input(f"  Min trade size to copy USD [{config.get('min_trade_size', 10)}]: ").strip()
+    min_size = float(mn_input) if mn_input else config.get('min_trade_size', 10)
+
+    enable_input = input("  Enable copy trading now? (y/N): ").strip().lower()
+    enabled = enable_input == 'y'
+
+    # Save
+    config['private_key'] = pk
+    config['funder_address'] = funder
+    config['signature_type'] = sig_type
+    config['copy_percentage'] = copy_pct
+    config['max_trade_size'] = max_size
+    config['min_trade_size'] = min_size
+    config['copy_trading_enabled'] = enabled
+
+    save_config(config)
+
+    # Check balance
+    print()
+    print("Checking wallet balance...")
+    bal = get_usdc_balance(funder)
+    print(f"  USDC.e Balance: ${bal:,.2f}")
+
+    if bal < 1:
+        print("  WARNING: Low balance. Deposit USDC.e to your funder address.")
+
+    # Test CLOB connection
+    print()
+    print("Testing CLOB API connection...")
+    try:
+        from py_clob_client.client import ClobClient
+        client = ClobClient(
+            "https://clob.polymarket.com",
+            key=pk, chain_id=137,
+            signature_type=sig_type, funder=funder
+        )
+        creds = client.create_or_derive_api_creds()
+        if creds:
+            client.set_api_creds(creds)
+            print("  CLOB API: Connected successfully!")
+        else:
+            print("  CLOB API: WARNING - Could not derive credentials.")
+            print("  Check that your private key and funder address match.")
+    except ImportError:
+        print("  CLOB API: py-clob-client not installed. Run: pip install py-clob-client")
+    except Exception as e:
+        print(f"  CLOB API: Error - {e}")
+
+    print()
+    print("=" * 60)
+    print("  Configuration saved to config.json")
+    print()
+    print("  Next steps:")
+    print("    1. python fetcher.py   (fetch trades from target wallets)")
+    print("    2. python app.py       (start dashboard + copy engine)")
+    print("    3. Open http://localhost:5000")
+    print("=" * 60)
+
+
+if __name__ == '__main__':
+    setup()

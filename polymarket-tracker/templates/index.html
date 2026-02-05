@@ -99,9 +99,14 @@
         .form-group small { display:block; margin-top:4px; font-size:11px; color:var(--text-dim); }
         .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 
-        .warning-banner { display:flex; align-items:flex-start; gap:10px; background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.2); border-radius:var(--radius); padding:12px 14px; margin-bottom:14px; }
-        .warning-banner svg { flex-shrink:0; color:var(--yellow); margin-top:1px; }
-        .warning-banner p { font-size:12px; color:#fbbf24; line-height:1.5; }
+        .info-banner { display:flex; align-items:flex-start; gap:10px; border-radius:var(--radius); padding:14px 16px; margin-bottom:16px; }
+        .info-banner.warn { background:rgba(251,191,36,0.08); border:1px solid rgba(251,191,36,0.2); }
+        .info-banner.warn p { color:#fbbf24; }
+        .info-banner.info { background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2); }
+        .info-banner.info p { color:#a5b4fc; }
+        .info-banner svg { flex-shrink:0; margin-top:1px; }
+        .info-banner p { font-size:12px; line-height:1.5; }
+        .info-banner code { background:rgba(255,255,255,0.08); padding:1px 6px; border-radius:3px; font-family:monospace; font-size:11px; }
 
         .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:10px; margin-bottom:16px; }
         .stat-card { background:var(--bg-input); border-radius:8px; padding:12px; text-align:center; }
@@ -128,8 +133,7 @@
         .position-pnl .size { font-size:13px; font-weight:600; }
         .position-pnl .pnl { font-size:11px; }
 
-        /* Live Log */
-        .log-panel { max-height:400px; overflow-y:auto; font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace; font-size:12px; background:#0a0a0c; border-radius:8px; padding:12px; }
+        .log-panel { max-height:500px; overflow-y:auto; font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace; font-size:12px; background:#0a0a0c; border-radius:8px; padding:12px; }
         .log-entry { padding:4px 0; border-bottom:1px solid rgba(255,255,255,0.03); display:flex; gap:10px; line-height:1.6; }
         .log-entry .log-time { color:var(--text-dim); white-space:nowrap; flex-shrink:0; }
         .log-entry .log-level { font-weight:600; width:56px; flex-shrink:0; text-transform:uppercase; }
@@ -138,7 +142,6 @@
         .log-level.ERROR, .log-level.FAILED { color:var(--red); } .log-level.WARN { color:var(--yellow); }
         .log-level.COPY { color:#c084fc; } .log-level.SKIP { color:var(--text-dim); }
 
-        /* Copy Trades Table */
         .ct-table { width:100%; border-collapse:collapse; }
         .ct-table th { text-align:left; padding:8px 10px; font-size:11px; font-weight:500; color:var(--text-dim); text-transform:uppercase; background:var(--bg-input); letter-spacing:.3px; }
         .ct-table th:first-child { border-radius:6px 0 0 6px; } .ct-table th:last-child { border-radius:0 6px 6px 0; }
@@ -189,7 +192,7 @@
         <div class="topbar-left">
             <div class="topbar-logo">Polymarket Copy Trader</div>
             <div class="topbar-nav">
-                <button class="active" data-page="copy" onclick="switchPage('copy')">Copy Trading</button>
+                <button class="active" data-page="copy" onclick="switchPage('copy')">Dashboard</button>
                 <button data-page="trades" onclick="switchPage('trades')">Trade Feed</button>
                 <button data-page="log" onclick="switchPage('log')">Engine Log</button>
             </div>
@@ -221,15 +224,23 @@
         </div>
 
         <div class="panel-center">
-            <!-- Page: Copy Trading -->
+            <!-- Page: Dashboard -->
             <div class="page active" id="page-copy">
+                <!-- No wallet banner -->
+                <div class="info-banner warn" id="no-wallet-banner" style="display:none;">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                    <p>No wallet configured. Run <code>python setup_config.py</code> in your terminal to set up your private key and wallet address, then restart <code>python app.py</code>.</p>
+                </div>
+
                 <div class="grid-2">
                     <!-- Your Wallet -->
-                    <div class="card" id="your-wallet-card">
+                    <div class="card">
                         <h3>Your Wallet</h3>
-                        <div id="wallet-status"></div>
+                        <div id="wallet-status">
+                            <div style="padding:20px;text-align:center;"><div class="spinner"></div></div>
+                        </div>
                     </div>
-                    <!-- Copy Trading Status -->
+                    <!-- Copy Trading Engine -->
                     <div class="card">
                         <h3>Copy Trading Engine</h3>
                         <div class="toggle-row" style="margin-bottom:10px;">
@@ -281,28 +292,15 @@
                     <div id="target-markets"><div class="empty-state"><p>No data yet</p></div></div>
                 </div>
 
-                <!-- Wallet Setup -->
-                <div class="card" id="wallet-setup" style="display:none;margin-top:16px;">
-                    <h3>Wallet Setup</h3>
-                    <div class="warning-banner">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                        <p>Your private key is stored locally and never sent externally. Only used to sign Polymarket CLOB orders.</p>
+                <!-- Recent Engine Log Preview -->
+                <div class="card" style="margin-top:16px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                        <h3 style="margin-bottom:0;">Recent Engine Activity</h3>
+                        <button class="btn btn-sm btn-outline" onclick="switchPage('log')">View Full Log</button>
                     </div>
-                    <div class="form-group"><label>Private Key</label><input type="password" id="input-pk" placeholder="Your wallet private key"><small>Export from reveal.polymarket.com</small></div>
-                    <div class="form-group"><label>Funder Address (Proxy Wallet)</label><input type="text" id="input-funder" placeholder="0x..."><small>The Polymarket proxy address that holds your USDC</small></div>
-                    <div class="form-group"><label>Signature Type</label><select id="input-sigtype"><option value="1">Email / Magic Wallet</option><option value="2">Browser Wallet (MetaMask, etc.)</option></select></div>
-                    <button class="btn" onclick="saveCreds()" style="width:100%;">Save & Connect</button>
-                </div>
-
-                <!-- Trade Settings -->
-                <div class="card" style="margin-top:16px;" id="settings-card">
-                    <h3>Trade Settings</h3>
-                    <div class="form-row">
-                        <div class="form-group"><label>Copy Percentage (%)</label><input type="number" id="input-cp" min="1" max="100" value="10"><small>% of target trade size</small></div>
-                        <div class="form-group"><label>Max Trade Size ($)</label><input type="number" id="input-mx" min="1" value="100"><small>Cap per copy trade</small></div>
+                    <div class="log-panel" id="recent-log" style="max-height:200px;">
+                        <div class="empty-state" style="padding:20px;"><p>No log entries yet. Engine activity appears here in real-time.</p></div>
                     </div>
-                    <div class="form-group"><label>Min Trade Size to Copy ($)</label><input type="number" id="input-mn" min="0" value="10"><small>Ignore trades smaller than this</small></div>
-                    <button class="btn btn-outline" onclick="saveSettings()" style="width:100%;">Save Settings</button>
                 </div>
 
                 <!-- Copy Trades History -->
@@ -332,10 +330,7 @@
             <div class="page" id="page-log">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
                     <h2 style="font-size:16px;font-weight:600;">Copy Trading Engine Log</h2>
-                    <div style="display:flex;gap:8px;">
-                        <button class="btn btn-sm btn-outline" onclick="fetchLog()">Refresh</button>
-                        <button class="btn btn-sm btn-outline" onclick="clearLog()">Clear</button>
-                    </div>
+                    <button class="btn btn-sm btn-outline" onclick="fetchLog()">Refresh</button>
                 </div>
                 <div class="log-panel" id="log-panel">
                     <div class="empty-state"><p>No log entries yet. Start the engine to see activity.</p></div>
@@ -402,7 +397,7 @@
         if(t.recent_markets&&t.recent_markets.length) mkts.innerHTML=t.recent_markets.map(m=>`<div class="position-item"><div class="position-icon">${m.icon?`<img src="${m.icon}" onerror="this.style.display='none'">`:''}</div><div class="position-info"><div class="title">${m.title||'Unknown'}</div><div class="outcome">${m.outcome||''}</div></div><div class="position-pnl"><div class="size">${formatUSD(m.volume)}</div><div class="pnl" style="color:var(--text-dim);">${m.trade_count} trades</div></div></div>`).join('');
         else mkts.innerHTML='<div class="empty-state"><p>No data yet</p></div>';
     }
-    async function fetchPositions(w) { try{const r=await fetch('/api/positions/'+w); const pos=await r.json(); const el=document.getElementById('target-positions'); if(pos.length) el.innerHTML=pos.map(p=>{const c=(p.cashPnl||0)>=0?'var(--green)':'var(--red)',s=(p.cashPnl||0)>=0?'+':''; return `<div class="position-item"><div class="position-icon">${p.icon?`<img src="${p.icon}" onerror="this.style.display='none'">`:''}</div><div class="position-info"><div class="title">${p.title||'...'}</div><div class="outcome">${p.outcome||''} &middot; ${p.size?parseFloat(p.size).toFixed(1)+' shares':''}</div></div><div class="position-pnl"><div class="size">${formatUSD(p.currentValue)}</div><div class="pnl" style="color:${c};">${s}${formatUSD(p.cashPnl)} (${s}${((p.percentPnl||0)*100).toFixed(1)}%)</div></div></div>`;}).join(''); else el.innerHTML='<div class="empty-state"><p>No open positions</p></div>';} catch(e){document.getElementById('target-positions').innerHTML='<div class="empty-state"><p>Could not fetch</p></div>';} }
+    async function fetchPositions(w) { try{const r=await fetch('/api/positions/'+w); const pos=await r.json(); const el=document.getElementById('target-positions'); if(Array.isArray(pos)&&pos.length) el.innerHTML=pos.map(p=>{const c=(p.cashPnl||0)>=0?'var(--green)':'var(--red)',s=(p.cashPnl||0)>=0?'+':''; return `<div class="position-item"><div class="position-icon">${p.icon?`<img src="${p.icon}" onerror="this.style.display='none'">`:''}</div><div class="position-info"><div class="title">${p.title||'...'}</div><div class="outcome">${p.outcome||''} &middot; ${p.size?parseFloat(p.size).toFixed(1)+' shares':''}</div></div><div class="position-pnl"><div class="size">${formatUSD(p.currentValue)}</div><div class="pnl" style="color:${c};">${s}${formatUSD(p.cashPnl)} (${s}${((p.percentPnl||0)*100).toFixed(1)}%)</div></div></div>`;}).join(''); else el.innerHTML='<div class="empty-state"><p>No open positions</p></div>';} catch(e){document.getElementById('target-positions').innerHTML='<div class="empty-state"><p>Could not fetch</p></div>';} }
     function copyAddr() { if(currentDetail)navigator.clipboard.writeText(currentDetail.wallet_address).then(()=>showToast('Copied!','success')); }
 
     // ---- Copy Trading Toggles ----
@@ -420,10 +415,7 @@
     // ---- Engine Control ----
     async function toggleEngine() {
         const running=config.engine_running;
-        try{
-            const r=await fetch('/api/engine/'+(running?'stop':'start'),{method:'POST'});
-            if(r.ok){config.engine_running=!running;updateEngineUI();showToast(running?'Engine stopped':'Engine started',running?'info':'success');}
-        }catch(e){showToast('Error','error');}
+        try{const r=await fetch('/api/engine/'+(running?'stop':'start'),{method:'POST'}); if(r.ok){config.engine_running=!running;updateEngineUI();showToast(running?'Engine stopped':'Engine started',running?'info':'success');}}catch(e){showToast('Error','error');}
     }
     function updateEngineUI() {
         const badge=document.getElementById('engine-badge'), dot=document.getElementById('engine-dot'), label=document.getElementById('engine-label');
@@ -431,12 +423,9 @@
         else{badge.classList.remove('on');badge.classList.add('off');dot.style.background='var(--red)';label.textContent='Engine Off';}
     }
 
-    // ---- Config ----
+    // ---- Config (read-only from Python config.json) ----
     async function loadConfig() {
         try{const r=await fetch('/api/config'); config=await r.json();
-        document.getElementById('input-cp').value=config.copy_percentage||10;
-        document.getElementById('input-mx').value=config.max_trade_size||100;
-        document.getElementById('input-mn').value=config.min_trade_size||10;
         document.getElementById('copy-pct-display').textContent=(config.copy_percentage||10)+'%';
         document.getElementById('copy-max-display').textContent='$'+(config.max_trade_size||100);
         document.getElementById('master-toggle').classList.toggle('active',!!config.copy_trading_enabled);
@@ -444,41 +433,43 @@
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
         document.getElementById('last-check').textContent=config.last_check?new Date(config.last_check).toLocaleTimeString():'--';
         updateStatus(); updateEngineUI(); renderWallet();
-        if(config.has_credentials)fetchBalance();
         }catch(e){}
     }
     function renderWallet() {
-        const el=document.getElementById('wallet-status'), setup=document.getElementById('wallet-setup');
+        const el=document.getElementById('wallet-status');
+        const banner=document.getElementById('no-wallet-banner');
         if(config.has_credentials){
-            setup.style.display='none';
-            el.innerHTML=`<div class="status-row"><span class="label">Connection</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${config.funder_address?truncAddr(config.funder_address):'...'}</span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" id="inline-balance" style="color:var(--green);">Loading...</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div style="display:flex;gap:8px;margin-top:12px;"><button class="btn btn-outline btn-sm" onclick="fetchBalance()">Refresh</button><button class="btn btn-outline btn-sm" onclick="document.getElementById('wallet-setup').style.display='block'">Change</button></div>`;
+            banner.style.display='none';
+            const bal=config.usdc_balance!==null&&config.usdc_balance!==undefined?'$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'Loading...';
+            // Also update header balance
+            if(config.usdc_balance!==null&&config.usdc_balance!==undefined){
+                document.getElementById('header-balance-amount').textContent='$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+                document.getElementById('header-balance').style.display='flex';
+            }
+            el.innerHTML=`
+                <div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div>
+                <div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${truncAddr(config.funder_address)}</span></div>
+                <div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div>
+                <div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div>
+                <div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>
+            `;
         } else {
-            setup.style.display='block';
-            el.innerHTML='<div class="status-row"><span class="label">Connection</span><span class="value"><span class="dot off"></span>Not Connected</span></div><p style="font-size:13px;color:var(--text-dim);margin-top:12px;">Set up your wallet below to enable copy trading.</p>';
+            banner.style.display='flex';
+            document.getElementById('header-balance').style.display='none';
+            el.innerHTML=`
+                <div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div>
+                <div style="margin-top:12px;">
+                    <div class="info-banner info" style="margin-bottom:0;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                        <p>Run <code>python setup_config.py</code> in your terminal to configure your wallet and private key. Then restart the server.</p>
+                    </div>
+                </div>
+            `;
         }
-    }
-    async function saveCreds() {
-        const pk=document.getElementById('input-pk').value.trim(), fa=document.getElementById('input-funder').value.trim(), st=parseInt(document.getElementById('input-sigtype').value);
-        if(!pk||!fa){showToast('Enter both fields','error');return;}
-        try{const r=await fetch('/api/config/credentials',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({private_key:pk,funder_address:fa,signature_type:st})}); if(r.ok){showToast('Wallet connected!','success');document.getElementById('input-pk').value='';loadConfig();}else{const res=await r.json();showToast(res.error||'Failed','error');}}catch(e){showToast('Error','error');}
-    }
-    async function saveSettings() {
-        const cp=parseInt(document.getElementById('input-cp').value),mx=parseFloat(document.getElementById('input-mx').value),mn=parseFloat(document.getElementById('input-mn').value);
-        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_percentage:cp,max_trade_size:mx,min_trade_size:mn})}); if(r.ok){showToast('Saved!','success');loadConfig();}else showToast('Failed','error');}catch(e){}
-    }
-
-    // ---- Balance ----
-    async function fetchBalance() {
-        try{const r=await fetch('/api/balance'); const d=await r.json();
-        if(d.success){const b=d.usdc_balance||0; const f='$'+b.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-        document.getElementById('header-balance-amount').textContent=f; document.getElementById('header-balance').style.display='flex';
-        const ib=document.getElementById('inline-balance'); if(ib)ib.textContent=f;}
-        else{document.getElementById('header-balance').style.display='none'; const ib=document.getElementById('inline-balance'); if(ib)ib.textContent='--';
-        if(d.error)showToast(d.error,'error');}}catch(e){}
     }
 
     // ---- Stats ----
-    async function fetchStats() { try{const r=await fetch('/api/stats'); const s=await r.json();}catch(e){} }
+    async function fetchStats() { try{await fetch('/api/stats');}catch(e){} }
 
     // ---- Trades ----
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
@@ -505,24 +496,30 @@
 
     // ---- Engine Log ----
     async function fetchLog() {
-        try{const r=await fetch('/api/copy-log?limit=200'); logEntries=await r.json(); renderLog();}catch(e){}
-    }
-    async function clearLog() {
-        // Client-side only - just clear display
-        logEntries=[];renderLog();
+        try{const r=await fetch('/api/copy-log?limit=200'); logEntries=await r.json(); renderLog(); renderRecentLog();}catch(e){}
     }
     function renderLog() {
         const el=document.getElementById('log-panel');
-        if(!logEntries.length){el.innerHTML='<div class="empty-state"><p>No log entries yet</p></div>';return;}
+        if(!logEntries.length){el.innerHTML='<div class="empty-state"><p>No log entries yet. Start the engine to see activity.</p></div>';return;}
         el.innerHTML=logEntries.map(l=>{
             const t=l.timestamp?new Date(l.timestamp).toLocaleTimeString():'--';
             return `<div class="log-entry"><span class="log-time">${t}</span><span class="log-level ${l.level}">${l.level}</span><span class="log-msg">${l.message}${l.details?' <span style="color:var(--text-dim);">'+l.details+'</span>':''}</span></div>`;
         }).join('');
         el.scrollTop=0;
     }
+    function renderRecentLog() {
+        const el=document.getElementById('recent-log');
+        const recent=logEntries.slice(0,10);
+        if(!recent.length){el.innerHTML='<div class="empty-state" style="padding:20px;"><p>No log entries yet</p></div>';return;}
+        el.innerHTML=recent.map(l=>{
+            const t=l.timestamp?new Date(l.timestamp).toLocaleTimeString():'--';
+            return `<div class="log-entry"><span class="log-time">${t}</span><span class="log-level ${l.level}">${l.level}</span><span class="log-msg">${l.message}</span></div>`;
+        }).join('');
+    }
     function appendLogEntries(newLogs) {
         logEntries=newLogs.concat(logEntries);
         if(document.getElementById('page-log').classList.contains('active'))renderLog();
+        renderRecentLog();
     }
 
     // ---- SSE ----
@@ -555,7 +552,8 @@
     // ---- Init ----
     fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();
     connectSSE();
-    setInterval(()=>{fetchStats();loadConfig();},15000);
+    // Refresh config (includes balance) every 30s
+    setInterval(loadConfig,30000);
 </script>
 </body>
 </html>
