@@ -966,9 +966,16 @@
                     if (inAllow) inAllow.textContent = fmt(allow);
                 } else {
                     document.getElementById('header-balance').style.display = 'none';
-                    if (data.error && data.error !== 'No credentials configured') showToast('Balance: ' + data.error, 'error');
+                    // Show inline error
+                    const inBal = document.getElementById('inline-balance');
+                    const inAllow = document.getElementById('inline-allowance');
+                    if (inBal) inBal.textContent = 'Error';
+                    if (inAllow) inAllow.textContent = 'Error';
+                    if (data.error && data.error !== 'No credentials configured') {
+                        showToast(data.error, 'error');
+                    }
                 }
-            } catch(e) { console.error(e); }
+            } catch(e) { console.error('fetchBalance error:', e); }
         }
 
         // ---- Stats ----

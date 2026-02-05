@@ -370,22 +370,39 @@ def get_balance():
             sig_type = 1
         sig_type = int(sig_type)
         
+        private_key = config['private_key']
+        funder = config['funder_address']
+        
+        if not private_key or not funder:
+            return jsonify({'error': 'Private key or funder address is empty', 'balance': None})
+        
         client = ClobClient(
             "https://clob.polymarket.com",
-            key=config['private_key'],
+            key=private_key,
             chain_id=137,
             signature_type=sig_type,
-            funder=config['funder_address']
+            funder=funder
         )
-        client.set_api_creds(client.create_or_derive_api_creds())
+        
+        # Derive API creds - this can fail if key/funder mismatch
+        try:
+            creds = client.create_or_derive_api_creds()
+            if creds is None:
+                return jsonify({'error': 'Failed to derive API credentials. Check your private key and funder address.', 'balance': None})
+            client.set_api_creds(creds)
+        except Exception as cred_err:
+            return jsonify({'error': f'Credential error: {str(cred_err)}', 'balance': None})
         
         # Get balance allowances which includes USDC balance info
-        balance_info = client.get_balance_allowance()
+        try:
+            balance_info = client.get_balance_allowance()
+        except Exception as bal_err:
+            return jsonify({'error': f'Balance fetch error: {str(bal_err)}', 'balance': None})
         
         return jsonify({
             'success': True,
             'balance': balance_info,
-            'funder_address': config['funder_address']
+            'funder_address': funder
         })
     except ImportError:
         return jsonify({'error': 'py-clob-client not installed. Run: pip install py-clob-client', 'balance': None})

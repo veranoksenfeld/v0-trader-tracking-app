@@ -71,11 +71,18 @@ def get_clob_client(config):
             funder=funder_address
         )
         # Derive API credentials for authenticated endpoints
-        client.set_api_creds(client.create_or_derive_api_creds())
+        creds = client.create_or_derive_api_creds()
+        if creds is None:
+            print("ERROR: create_or_derive_api_creds() returned None.")
+            print("  Check that your private key and funder address are correct and match.")
+            return None
+        client.set_api_creds(creds)
         print(f"[{datetime.now()}] CLOB client initialized successfully")
         return client
     except Exception as e:
         print(f"ERROR: Failed to initialize CLOB client: {e}")
+        import traceback
+        traceback.print_exc()
         return None
 
 
