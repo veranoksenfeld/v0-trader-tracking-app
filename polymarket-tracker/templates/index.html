@@ -3,2129 +3,1087 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Polymarket Trader Tracker</title>
+    <title>Polymarket Copy Trader</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg-primary: #09090b;
+            --bg-card: #131316;
+            --bg-card-hover: #1a1a1f;
+            --bg-input: #1e1e23;
+            --border: #27272a;
+            --border-hover: #3f3f46;
+            --text-primary: #fafafa;
+            --text-secondary: #a1a1aa;
+            --text-muted: #71717a;
+            --accent: #6366f1;
+            --accent-hover: #4f46e5;
+            --green: #22c55e;
+            --green-dim: rgba(34,197,94,0.12);
+            --red: #ef4444;
+            --red-dim: rgba(239,68,68,0.12);
+            --yellow: #eab308;
+            --radius: 10px;
         }
-
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
-            background-color: #0a0a0f;
-            color: #e4e4e7;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
             min-height: 100vh;
+            line-height: 1.5;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: #818cf8; }
+
+        /* Layout */
+        .app { display: flex; flex-direction: column; min-height: 100vh; }
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px 24px; border-bottom: 1px solid var(--border);
+            background: var(--bg-card); position: sticky; top: 0; z-index: 50;
+        }
+        .topbar-left { display: flex; align-items: center; gap: 20px; }
+        .topbar-logo {
+            font-size: 18px; font-weight: 700;
+            background: linear-gradient(135deg, #6366f1, #8b5cf6);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .topbar-nav { display: flex; gap: 4px; }
+        .topbar-nav button {
+            padding: 7px 16px; background: transparent; border: none;
+            color: var(--text-muted); font-size: 13px; font-weight: 500;
+            border-radius: 6px; cursor: pointer; transition: all .15s;
+        }
+        .topbar-nav button:hover { background: var(--bg-input); color: var(--text-primary); }
+        .topbar-nav button.active { background: var(--accent); color: #fff; }
+        .topbar-right { display: flex; align-items: center; gap: 12px; }
+        .live-badge {
+            display: flex; align-items: center; gap: 6px;
+            font-size: 12px; color: var(--text-muted); padding: 5px 10px;
+            background: var(--bg-input); border-radius: 6px;
+        }
+        .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+        .balance-chip {
+            display: flex; align-items: center; gap: 8px;
+            padding: 5px 12px; background: var(--bg-input); border-radius: 6px;
+            font-size: 13px; font-weight: 600; color: var(--green);
+        }
+        .balance-chip .label { color: var(--text-muted); font-weight: 400; }
+
+        /* Panels */
+        .panels { display: flex; flex: 1; overflow: hidden; }
+        .panel-left {
+            width: 320px; min-width: 320px; border-right: 1px solid var(--border);
+            display: flex; flex-direction: column; background: var(--bg-card);
+            overflow-y: auto;
+        }
+        .panel-center { flex: 1; overflow-y: auto; padding: 24px; }
+
+        /* Section headers */
+        .section-label {
+            font-size: 11px; font-weight: 600; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: .5px; padding: 16px 16px 8px;
         }
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
+        /* Trader sidebar */
+        .add-form { display: flex; gap: 8px; padding: 12px 16px; }
+        .add-form input {
+            flex: 1; padding: 9px 12px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: var(--radius);
+            color: var(--text-primary); font-size: 13px; outline: none;
         }
-
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 20px 0;
-            border-bottom: 1px solid #27272a;
-            margin-bottom: 30px;
-        }
-
-        .logo {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .logo h1 {
-            font-size: 24px;
-            font-weight: 600;
-            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-
-        .stats-bar {
-            display: flex;
-            gap: 30px;
-        }
-
-        .stat {
-            text-align: center;
-        }
-
-        .stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: #fff;
-        }
-
-        .stat-label {
-            font-size: 12px;
-            color: #71717a;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .main-content {
-            display: grid;
-            grid-template-columns: 350px 1fr;
-            gap: 30px;
-        }
-
-        .sidebar {
-            background: #18181b;
-            border-radius: 12px;
-            padding: 20px;
-            height: fit-content;
-            position: sticky;
-            top: 20px;
-        }
-
-        .sidebar h2 {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 20px;
-            color: #fff;
-        }
-
-        .add-trader-form {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-        }
-
-        .add-trader-form input {
-            flex: 1;
-            padding: 12px 16px;
-            background: #27272a;
-            border: 1px solid #3f3f46;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 14px;
-        }
-
-        .add-trader-form input::placeholder {
-            color: #71717a;
-        }
-
-        .add-trader-form input:focus {
-            outline: none;
-            border-color: #6366f1;
-        }
+        .add-form input:focus { border-color: var(--accent); }
+        .add-form input::placeholder { color: var(--text-muted); }
 
         .btn {
-            padding: 12px 20px;
-            background: #6366f1;
-            color: #fff;
-            border: none;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            cursor: pointer;
-            transition: background 0.2s;
+            padding: 9px 16px; background: var(--accent); color: #fff;
+            border: none; border-radius: var(--radius); font-size: 13px;
+            font-weight: 500; cursor: pointer; transition: background .15s;
+            white-space: nowrap;
         }
+        .btn:hover { background: var(--accent-hover); }
+        .btn-sm { padding: 5px 10px; font-size: 12px; }
+        .btn-ghost { background: transparent; color: var(--text-muted); padding: 5px 8px; }
+        .btn-ghost:hover { background: var(--bg-input); color: var(--text-primary); }
+        .btn-danger { background: var(--red); }
+        .btn-danger:hover { background: #dc2626; }
+        .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
+        .btn-outline:hover { border-color: var(--accent); color: var(--accent); background: transparent; }
 
-        .btn:hover {
-            background: #4f46e5;
+        .trader-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 16px; cursor: pointer; transition: background .1s;
+            border-left: 3px solid transparent;
         }
-
-        .btn-danger {
-            background: #dc2626;
-            padding: 6px 12px;
-            font-size: 12px;
-        }
-
-        .btn-danger:hover {
-            background: #b91c1c;
-        }
-
-        .trader-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-            max-height: 600px;
-            overflow-y: auto;
-        }
-
-        .trader-card {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px;
-            background: #27272a;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: background 0.2s;
-        }
-
-        .trader-card:hover {
-            background: #3f3f46;
-        }
-
-        .trader-card.active {
-            background: #6366f1;
-        }
-
+        .trader-item:hover { background: var(--bg-card-hover); }
+        .trader-item.active { background: var(--bg-card-hover); border-left-color: var(--accent); }
         .trader-avatar {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            background: #52525b;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 600;
-            font-size: 14px;
-            overflow: hidden;
+            width: 36px; height: 36px; border-radius: 50%;
+            background: #27272a; display: flex; align-items: center;
+            justify-content: center; font-weight: 600; font-size: 13px;
+            overflow: hidden; flex-shrink: 0;
+        }
+        .trader-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .trader-meta { flex: 1; min-width: 0; }
+        .trader-meta .name {
+            font-size: 13px; font-weight: 500; color: var(--text-primary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            display: flex; align-items: center; gap: 5px;
+        }
+        .trader-meta .addr { font-size: 11px; color: var(--text-muted); font-family: monospace; }
+        .badge { font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 3px; text-transform: uppercase; }
+        .badge-copy { background: var(--green-dim); color: var(--green); }
+        .badge-verified { color: var(--accent); font-size: 13px; }
+        .trader-item .remove-btn {
+            opacity: 0; background: none; border: none; color: var(--text-muted);
+            cursor: pointer; padding: 4px; transition: all .15s; font-size: 16px;
+        }
+        .trader-item:hover .remove-btn { opacity: 1; }
+        .trader-item .remove-btn:hover { color: var(--red); }
+
+        /* Page: Copy Trading Dashboard */
+        .page { display: none; }
+        .page.active { display: block; }
+
+        .copy-hero {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px;
+        }
+        .copy-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 12px; padding: 20px;
+        }
+        .copy-card h3 {
+            font-size: 13px; font-weight: 500; color: var(--text-muted);
+            margin-bottom: 16px; text-transform: uppercase; letter-spacing: .3px;
         }
 
-        .trader-avatar img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
+        /* Status panel */
+        .status-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 12px 0; border-bottom: 1px solid var(--border);
         }
+        .status-row:last-child { border-bottom: none; }
+        .status-row .label { font-size: 13px; color: var(--text-secondary); }
+        .status-row .value { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.on { background: var(--green); }
+        .status-dot.off { background: var(--red); }
+        .status-dot.warn { background: var(--yellow); }
 
-        .trader-info {
-            flex: 1;
-            min-width: 0;
+        /* Setup form in copy trading */
+        .setup-section { margin-top: 16px; }
+        .form-group { margin-bottom: 14px; }
+        .form-group label {
+            display: block; font-size: 12px; color: var(--text-muted);
+            margin-bottom: 6px; font-weight: 500;
         }
-
-        .trader-name {
-            font-weight: 500;
-            font-size: 14px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            display: flex;
-            align-items: center;
-            gap: 6px;
+        .form-group input, .form-group select {
+            width: 100%; padding: 10px 12px; background: var(--bg-input);
+            border: 1px solid var(--border); border-radius: var(--radius);
+            color: var(--text-primary); font-size: 13px; outline: none;
         }
+        .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+        .form-group small { display: block; margin-top: 4px; font-size: 11px; color: var(--text-muted); }
+        .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
-        .verified-badge {
-            color: #6366f1;
-            font-size: 14px;
+        .warning-banner {
+            display: flex; align-items: flex-start; gap: 10px;
+            background: rgba(251,191,36,0.08); border: 1px solid rgba(251,191,36,0.2);
+            border-radius: var(--radius); padding: 12px 14px; margin-bottom: 16px;
         }
+        .warning-banner svg { flex-shrink: 0; color: var(--yellow); margin-top: 1px; }
+        .warning-banner p { font-size: 12px; color: #fbbf24; line-height: 1.5; }
 
-        .trader-address {
-            font-size: 12px;
-            color: #71717a;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+        /* Toggle */
+        .toggle-row {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 14px; background: linear-gradient(135deg, #1e1b4b, #312e81);
+            border-radius: var(--radius); margin-bottom: 16px;
         }
-
-        .trades-section {
-            background: #18181b;
-            border-radius: 12px;
-            padding: 20px;
+        .toggle-row .info h4 { font-size: 14px; font-weight: 600; color: #fff; }
+        .toggle-row .info p { font-size: 12px; color: #a5b4fc; }
+        .toggle-switch {
+            position: relative; width: 48px; height: 26px;
+            background: #3f3f46; border-radius: 13px; cursor: pointer; transition: background .2s;
         }
-
-        .trades-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 20px;
+        .toggle-switch.active { background: var(--green); }
+        .toggle-switch::after {
+            content: ''; position: absolute; top: 3px; left: 3px;
+            width: 20px; height: 20px; background: #fff;
+            border-radius: 50%; transition: transform .2s;
         }
+        .toggle-switch.active::after { transform: translateX(22px); }
 
-        .trades-header h2 {
-            font-size: 18px;
-            font-weight: 600;
-            color: #fff;
+        /* Target wallet info */
+        .target-header {
+            display: flex; align-items: center; gap: 16px;
+            padding-bottom: 16px; border-bottom: 1px solid var(--border); margin-bottom: 16px;
         }
-
-        .filter-buttons {
-            display: flex;
-            gap: 8px;
+        .target-avatar {
+            width: 56px; height: 56px; border-radius: 50%;
+            background: #27272a; display: flex; align-items: center;
+            justify-content: center; font-weight: 700; font-size: 22px;
+            overflow: hidden; flex-shrink: 0;
         }
+        .target-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .target-name { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+        .target-sub { font-size: 12px; color: var(--text-muted); }
+        .target-links { display: flex; gap: 10px; margin-top: 4px; }
+        .target-links a { font-size: 12px; display: flex; align-items: center; gap: 4px; }
+        .wallet-mono {
+            display: inline-flex; align-items: center; gap: 6px;
+            background: var(--bg-input); padding: 4px 10px; border-radius: 5px;
+            font-family: monospace; font-size: 11px; color: var(--text-muted);
+        }
+        .wallet-mono button {
+            background: none; border: none; color: var(--text-muted);
+            cursor: pointer; padding: 2px; transition: color .15s;
+        }
+        .wallet-mono button:hover { color: var(--text-primary); }
 
+        .stats-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px; margin-bottom: 16px;
+        }
+        .stat-card {
+            background: var(--bg-input); border-radius: 8px; padding: 12px; text-align: center;
+        }
+        .stat-card .val { font-size: 18px; font-weight: 700; color: var(--text-primary); }
+        .stat-card .val.positive { color: var(--green); }
+        .stat-card .val.negative { color: var(--red); }
+        .stat-card .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .3px; margin-top: 2px; }
+
+        /* Positions list */
+        .positions-list { max-height: 300px; overflow-y: auto; }
+        .position-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 0; border-bottom: 1px solid var(--border);
+        }
+        .position-item:last-child { border-bottom: none; }
+        .position-icon {
+            width: 32px; height: 32px; border-radius: 6px;
+            background: #27272a; overflow: hidden; flex-shrink: 0;
+        }
+        .position-icon img { width: 100%; height: 100%; object-fit: cover; }
+        .position-info { flex: 1; min-width: 0; }
+        .position-info .title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .position-info .outcome { font-size: 11px; color: var(--text-muted); }
+        .position-pnl { text-align: right; }
+        .position-pnl .size { font-size: 13px; font-weight: 600; }
+        .position-pnl .pnl { font-size: 11px; }
+
+        /* Copy trade log */
+        .log-table { width: 100%; border-collapse: collapse; }
+        .log-table th {
+            text-align: left; padding: 8px 12px; font-size: 11px;
+            font-weight: 500; color: var(--text-muted); text-transform: uppercase;
+            background: var(--bg-input); letter-spacing: .3px;
+        }
+        .log-table th:first-child { border-radius: 6px 0 0 6px; }
+        .log-table th:last-child { border-radius: 0 6px 6px 0; }
+        .log-table td { padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+
+        /* Trades page */
+        .trades-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .trades-header h2 { font-size: 16px; font-weight: 600; }
+        .filter-buttons { display: flex; gap: 4px; }
         .filter-btn {
-            padding: 8px 16px;
-            background: #27272a;
-            border: none;
-            border-radius: 6px;
-            color: #a1a1aa;
-            font-size: 13px;
-            cursor: pointer;
-            transition: all 0.2s;
+            padding: 6px 14px; background: var(--bg-input); border: none;
+            border-radius: 6px; color: var(--text-muted); font-size: 12px;
+            cursor: pointer; transition: all .15s;
         }
+        .filter-btn:hover, .filter-btn.active { background: var(--accent); color: #fff; }
 
-        .filter-btn:hover, .filter-btn.active {
-            background: #6366f1;
-            color: #fff;
-        }
-
-        .trades-table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-
+        .trades-table { width: 100%; border-collapse: collapse; }
         .trades-table th {
-            text-align: left;
-            padding: 12px 16px;
-            background: #27272a;
-            font-size: 12px;
-            font-weight: 500;
-            color: #71717a;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
+            text-align: left; padding: 10px 14px; background: var(--bg-input);
+            font-size: 11px; font-weight: 500; color: var(--text-muted);
+            text-transform: uppercase; letter-spacing: .3px;
         }
-
-        .trades-table th:first-child {
-            border-radius: 8px 0 0 8px;
-        }
-
-        .trades-table th:last-child {
-            border-radius: 0 8px 8px 0;
-        }
-
-        .trades-table td {
-            padding: 16px;
-            border-bottom: 1px solid #27272a;
-            font-size: 14px;
-        }
-
-        .trade-row {
-            transition: background 0.2s;
-        }
-
-        .trade-row:hover {
-            background: #27272a;
-        }
-
-        .trade-trader {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
+        .trades-table th:first-child { border-radius: 8px 0 0 8px; }
+        .trades-table th:last-child { border-radius: 0 8px 8px 0; }
+        .trades-table td { padding: 12px 14px; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .trade-row { transition: background .1s; }
+        .trade-row:hover { background: var(--bg-card-hover); }
+        .trade-trader { display: flex; align-items: center; gap: 8px; }
         .trade-trader-avatar {
-            width: 32px;
-            height: 32px;
-            border-radius: 50%;
-            background: #52525b;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            overflow: hidden;
+            width: 28px; height: 28px; border-radius: 50%;
+            background: #27272a; display: flex; align-items: center;
+            justify-content: center; font-size: 11px; overflow: hidden;
         }
-
-        .trade-trader-avatar img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .trade-market {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .trade-market-icon {
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            background: #52525b;
-            overflow: hidden;
-        }
-
-        .trade-market-icon img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .trade-market-info {
-            max-width: 300px;
-        }
-
-        .trade-market-title {
-            font-weight: 500;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .trade-market-outcome {
-            font-size: 12px;
-            color: #71717a;
-        }
-
-        .side-buy {
-            color: #22c55e;
-            font-weight: 600;
-        }
-
-        .side-sell {
-            color: #ef4444;
-            font-weight: 600;
-        }
-
-        .trade-amount {
-            font-weight: 500;
-        }
-
-        .trade-price {
-            color: #a1a1aa;
-        }
-
-        .trade-time {
-            color: #71717a;
-            font-size: 13px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #71717a;
-        }
-
-        .empty-state h3 {
-            font-size: 18px;
-            margin-bottom: 8px;
-            color: #a1a1aa;
-        }
-
-        .loading {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 40px;
-        }
-
-        .spinner {
-            width: 40px;
-            height: 40px;
-            border: 3px solid #27272a;
-            border-top-color: #6366f1;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-        }
-
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            padding: 16px 24px;
-            background: #27272a;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 14px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s;
-            z-index: 1000;
-        }
-
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-
-        .toast.error {
-            background: #dc2626;
-        }
-
-        .toast.success {
-            background: #16a34a;
-        }
-
-        .refresh-indicator {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            color: #71717a;
-        }
-
-        .refresh-dot {
-            width: 8px;
-            height: 8px;
-            background: #22c55e;
-            border-radius: 50%;
-            animation: pulse 2s infinite;
-        }
-
-        @keyframes pulse {
-            0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
-        }
+        .trade-trader-avatar img { width: 100%; height: 100%; object-fit: cover; }
+        .trade-market { display: flex; align-items: center; gap: 8px; }
+        .trade-market-icon { width: 28px; height: 28px; border-radius: 5px; background: #27272a; overflow: hidden; }
+        .trade-market-icon img { width: 100%; height: 100%; object-fit: cover; }
+        .trade-market-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+        .trade-market-outcome { font-size: 11px; color: var(--text-muted); }
+        .side-buy { color: var(--green); font-weight: 600; }
+        .side-sell { color: var(--red); font-weight: 600; }
 
         @keyframes flash-new {
-            0% { background: rgba(99, 102, 241, 0.3); }
+            0% { background: rgba(99,102,241,0.2); }
             100% { background: transparent; }
         }
-
-        .trade-row.new-trade {
-            animation: flash-new 2s ease-out;
-        }
-
-        .stream-disconnected .refresh-dot {
-            background: #ef4444 !important;
-            animation: none;
-        }
-
-        @media (max-width: 1024px) {
-            .main-content {
-                grid-template-columns: 1fr;
-            }
-
-            .sidebar {
-                position: static;
-            }
-        }
-
-        @media (max-width: 768px) {
-            .stats-bar {
-                display: none;
-            }
-
-            header {
-                flex-direction: column;
-                gap: 20px;
-            }
-        }
-
-        /* Enhanced Trader Panel Styles */
-        .trader-detail-panel {
-            background: #18181b;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 20px;
-            display: none;
-        }
-
-        .trader-detail-panel.active {
-            display: block;
-        }
-
-        .trader-detail-header {
-            display: flex;
-            align-items: flex-start;
-            gap: 20px;
-            margin-bottom: 24px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid #27272a;
-        }
-
-        .trader-detail-avatar {
-            width: 80px;
-            height: 80px;
-            border-radius: 50%;
-            background: #52525b;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 32px;
-            font-weight: 600;
-            overflow: hidden;
-            flex-shrink: 0;
-        }
-
-        .trader-detail-avatar img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .trader-detail-info {
-            flex: 1;
-        }
-
-        .trader-detail-name {
-            font-size: 24px;
-            font-weight: 600;
-            color: #fff;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-bottom: 4px;
-        }
-
-        .trader-detail-pseudonym {
-            color: #71717a;
-            font-size: 14px;
-            margin-bottom: 8px;
-        }
-
-        .trader-detail-bio {
-            color: #a1a1aa;
-            font-size: 14px;
-            line-height: 1.5;
-            margin-bottom: 12px;
-        }
-
-        .trader-detail-links {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-
-        .trader-link {
-            display: flex;
-            align-items: center;
-            gap: 6px;
-            color: #6366f1;
-            font-size: 13px;
-            text-decoration: none;
-            transition: color 0.2s;
-        }
-
-        .trader-link:hover {
-            color: #818cf8;
-        }
-
-        .wallet-address-full {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: #27272a;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 12px;
-            color: #a1a1aa;
-        }
-
-        .copy-btn {
-            background: none;
-            border: none;
-            color: #71717a;
-            cursor: pointer;
-            padding: 4px;
-            transition: color 0.2s;
-        }
-
-        .copy-btn:hover {
-            color: #fff;
-        }
-
-        .trader-stats-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 16px;
-            margin-bottom: 24px;
-        }
-
-        .trader-stat-card {
-            background: #27272a;
-            padding: 16px;
-            border-radius: 8px;
-            text-align: center;
-        }
-
-        .trader-stat-value {
-            font-size: 24px;
-            font-weight: 700;
-            color: #fff;
-            margin-bottom: 4px;
-        }
-
-        .trader-stat-label {
-            font-size: 12px;
-            color: #71717a;
-            text-transform: uppercase;
-        }
-
-        .trader-stat-value.positive {
-            color: #22c55e;
-        }
-
-        .trader-stat-value.negative {
-            color: #ef4444;
-        }
-
-        .copy-trading-section {
-            background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .copy-trading-info h3 {
-            font-size: 16px;
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 4px;
-        }
-
-        .copy-trading-info p {
-            font-size: 13px;
-            color: #a5b4fc;
-        }
-
-        .copy-trading-toggle {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .toggle-switch {
-            position: relative;
-            width: 56px;
-            height: 28px;
-            background: #3f3f46;
-            border-radius: 14px;
-            cursor: pointer;
-            transition: background 0.3s;
-        }
-
-        .toggle-switch.active {
-            background: #22c55e;
-        }
-
-        .toggle-switch::after {
-            content: '';
-            position: absolute;
-            top: 3px;
-            left: 3px;
-            width: 22px;
-            height: 22px;
-            background: #fff;
-            border-radius: 50%;
-            transition: transform 0.3s;
-        }
-
-        .toggle-switch.active::after {
-            transform: translateX(28px);
-        }
-
-        .toggle-label {
-            font-size: 14px;
-            font-weight: 500;
-            color: #fff;
-        }
-
-        .recent-markets {
-            margin-top: 20px;
-        }
-
-        .recent-markets h4 {
-            font-size: 14px;
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 12px;
-        }
-
-        .market-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px;
-            background: #27272a;
-            border-radius: 8px;
-            margin-bottom: 8px;
-        }
-
-        .market-item-icon {
-            width: 36px;
-            height: 36px;
-            border-radius: 6px;
-            background: #52525b;
-            overflow: hidden;
-        }
-
-        .market-item-icon img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .market-item-info {
-            flex: 1;
-        }
-
-        .market-item-title {
-            font-size: 14px;
-            font-weight: 500;
-            color: #fff;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .market-item-outcome {
-            font-size: 12px;
-            color: #71717a;
-        }
-
-        .market-item-stats {
-            text-align: right;
-        }
-
-        .market-item-volume {
-            font-size: 14px;
-            font-weight: 600;
-            color: #fff;
-        }
-
-        .market-item-trades {
-            font-size: 12px;
-            color: #71717a;
-        }
-
-        .close-panel-btn {
-            background: #27272a;
-            border: none;
-            color: #71717a;
-            width: 32px;
-            height: 32px;
-            border-radius: 6px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            transition: all 0.2s;
-        }
-
-        .close-panel-btn:hover {
-            background: #3f3f46;
-            color: #fff;
-        }
-
-        .trader-detail-actions {
-            display: flex;
-            gap: 8px;
-        }
-
-        @media (max-width: 1024px) {
-            .trader-stats-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-        }
-
-        /* Settings Modal Styles */
-        .modal-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.8);
-            display: none;
-            align-items: center;
-            justify-content: center;
-            z-index: 1000;
-        }
-
-        .modal-overlay.active {
-            display: flex;
-        }
-
-        .modal {
-            background: #18181b;
-            border-radius: 16px;
-            width: 100%;
-            max-width: 600px;
-            max-height: 90vh;
-            overflow-y: auto;
-            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5);
-        }
-
-        .modal-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 24px;
-            border-bottom: 1px solid #27272a;
-        }
-
-        .modal-header h2 {
-            font-size: 20px;
-            font-weight: 600;
-            color: #fff;
-        }
-
-        .modal-close {
-            background: #27272a;
-            border: none;
-            color: #71717a;
-            width: 36px;
-            height: 36px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-size: 20px;
-            transition: all 0.2s;
-        }
-
-        .modal-close:hover {
-            background: #3f3f46;
-            color: #fff;
-        }
-
-        .modal-body {
-            padding: 24px;
-        }
-
-        .settings-section {
-            margin-bottom: 32px;
-        }
-
-        .settings-section:last-child {
-            margin-bottom: 0;
-        }
-
-        .settings-section h3 {
-            font-size: 16px;
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 16px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .settings-section h3 .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #ef4444;
-        }
-
-        .settings-section h3 .status-dot.active {
-            background: #22c55e;
-        }
-
-        .form-group {
-            margin-bottom: 16px;
-        }
-
-        .form-group label {
-            display: block;
-            font-size: 14px;
-            color: #a1a1aa;
-            margin-bottom: 8px;
-        }
-
-        .form-group input, .form-group select {
-            width: 100%;
-            padding: 12px 16px;
-            background: #27272a;
-            border: 1px solid #3f3f46;
-            border-radius: 8px;
-            color: #fff;
-            font-size: 14px;
-        }
-
-        .form-group input:focus, .form-group select:focus {
-            outline: none;
-            border-color: #6366f1;
-        }
-
-        .form-group small {
-            display: block;
-            margin-top: 6px;
-            font-size: 12px;
-            color: #71717a;
-        }
-
-        .form-row {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 16px;
-        }
-
-        .master-toggle {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            background: linear-gradient(135deg, #1e1b4b 0%, #312e81 100%);
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 24px;
-        }
-
-        .master-toggle-info h4 {
-            font-size: 16px;
-            font-weight: 600;
-            color: #fff;
-            margin-bottom: 4px;
-        }
-
-        .master-toggle-info p {
-            font-size: 13px;
-            color: #a5b4fc;
-        }
-
-        .credentials-status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 12px 16px;
-            background: #27272a;
-            border-radius: 8px;
-            margin-bottom: 16px;
-        }
-
-        .credentials-status.connected {
-            background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-        }
-
-        .credentials-status.disconnected {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-        }
-
-        .credentials-status span {
-            font-size: 14px;
-            color: #a1a1aa;
-        }
-
-        .btn-secondary {
-            background: #27272a;
-            color: #fff;
-        }
-
-        .btn-secondary:hover {
-            background: #3f3f46;
-        }
-
-        .warning-box {
-            background: rgba(251, 191, 36, 0.1);
-            border: 1px solid rgba(251, 191, 36, 0.3);
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-
-        .warning-box p {
-            font-size: 13px;
-            color: #fbbf24;
-            line-height: 1.5;
-        }
-
-        .click-hint {
-            background: #27272a;
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin-bottom: 16px;
-            font-size: 13px;
-            color: #a1a1aa;
-            text-align: center;
-        }
-
-        .click-hint strong {
-            color: #6366f1;
-        }
-
-        /* Header Actions */
-        .header-actions {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-        }
-
-        .btn-api {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: linear-gradient(135deg, #dc2626 0%, #b91c1c 100%);
-            padding: 10px 16px;
-            font-weight: 600;
-        }
-
-        .btn-api:hover {
-            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-        }
-
-        .btn-api.connected {
-            background: linear-gradient(135deg, #16a34a 0%, #15803d 100%);
-        }
-
-        .btn-api.connected:hover {
-            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
-        }
-
-        @media (max-width: 768px) {
-            header {
-                flex-direction: column;
-                gap: 16px;
-            }
-
-            .header-actions {
-                width: 100%;
-            }
-
-            .btn-api {
-                width: 100%;
-                justify-content: center;
-            }
+        .trade-row.new-trade { animation: flash-new 2s ease-out; }
+
+        .empty-state { text-align: center; padding: 48px 20px; color: var(--text-muted); }
+        .empty-state h3 { font-size: 15px; color: var(--text-secondary); margin-bottom: 6px; }
+        .spinner { width: 32px; height: 32px; border: 3px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; margin: 0 auto; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .toast {
+            position: fixed; bottom: 20px; right: 20px; padding: 12px 20px;
+            background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
+            color: var(--text-primary); font-size: 13px;
+            box-shadow: 0 8px 24px rgba(0,0,0,.4);
+            transform: translateY(80px); opacity: 0; transition: all .25s; z-index: 999;
+        }
+        .toast.show { transform: translateY(0); opacity: 1; }
+        .toast.error { border-color: var(--red); }
+        .toast.success { border-color: var(--green); }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #27272a; border-radius: 3px; }
+        ::-webkit-scrollbar-thumb:hover { background: #3f3f46; }
+
+        @media (max-width: 900px) {
+            .panels { flex-direction: column; }
+            .panel-left { width: 100%; min-width: 100%; border-right: none; border-bottom: 1px solid var(--border); max-height: 300px; }
+            .copy-hero { grid-template-columns: 1fr; }
+            .topbar-nav { display: none; }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <div class="logo">
-                <h1>Polymarket Trader Tracker</h1>
+    <div class="app">
+        <!-- Top Bar -->
+        <div class="topbar">
+            <div class="topbar-left">
+                <div class="topbar-logo">Polymarket Copy Trader</div>
+                <div class="topbar-nav">
+                    <button class="active" data-page="copy" onclick="switchPage('copy')">Copy Trading</button>
+                    <button data-page="trades" onclick="switchPage('trades')">Trade Feed</button>
+                </div>
             </div>
-            <div class="stats-bar">
-                <div class="stat">
-                    <div class="stat-value" id="stat-traders">0</div>
-                    <div class="stat-label">Traders</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value" id="stat-trades">0</div>
-                    <div class="stat-label">Trades</div>
-                </div>
-                <div class="stat">
-                    <div class="stat-value" id="stat-volume">$0</div>
-                    <div class="stat-label">Volume</div>
-                </div>
-                <div class="refresh-indicator" id="stream-status">
-                    <div class="refresh-dot" id="stream-dot" style="background: #eab308;"></div>
+            <div class="topbar-right">
+                <div class="live-badge" id="stream-status">
+                    <div class="live-dot" id="stream-dot"></div>
                     <span id="stream-label">Connecting...</span>
                 </div>
-            </div>
-            <div class="header-actions">
-                <div id="header-balance" style="display: none; background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 8px 16px; display: none; align-items: center; gap: 12px;">
-                    <div style="text-align: right;">
-                        <div style="font-size: 16px; font-weight: 700; color: #22c55e;" id="header-balance-amount">$0.00</div>
-                        <div style="font-size: 10px; color: #71717a; text-transform: uppercase;">USDC</div>
-                    </div>
+                <div class="balance-chip" id="header-balance" style="display:none;">
+                    <span class="label">USDC</span>
+                    <span id="header-balance-amount">$0.00</span>
                 </div>
-                <button class="btn btn-api" onclick="openSettingsModal()" id="api-status-btn">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                        <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                    </svg>
-                    <span id="api-btn-text">Setup API Key</span>
-                </button>
             </div>
-        </header>
+        </div>
 
-        <div class="main-content">
-            <div class="sidebar">
-                <h2>Tracked Traders</h2>
-                <div class="add-trader-form">
-                    <input type="text" id="wallet-input" placeholder="Enter wallet address (0x...)">
-                    <button class="btn" onclick="addTrader()">Add</button>
+        <div class="panels">
+            <!-- Left: Trader Sidebar -->
+            <div class="panel-left">
+                <div class="section-label">Target Wallets</div>
+                <div class="add-form">
+                    <input type="text" id="wallet-input" placeholder="Paste wallet (0x...)">
+                    <button class="btn btn-sm" onclick="addTrader()">Track</button>
                 </div>
-                <div class="click-hint" style="margin-bottom: 12px;">
-                    Click a trader to view details and enable <strong>Copy Trading</strong>
-                </div>
-                <div class="trader-list" id="trader-list">
-                    <div class="loading">
-                        <div class="spinner"></div>
-                    </div>
+                <div id="trader-list">
+                    <div style="padding: 32px; text-align: center;"><div class="spinner"></div></div>
                 </div>
             </div>
 
-            <!-- Enhanced Trader Detail Panel -->
-            <div class="trader-detail-panel" id="trader-detail-panel">
-                <div class="trader-detail-header">
-                    <div class="trader-detail-avatar" id="detail-avatar">?</div>
-                    <div class="trader-detail-info">
-                        <div class="trader-detail-name">
-                            <span id="detail-name">Select a Trader</span>
-                            <span class="verified-badge" id="detail-verified" style="display: none;">✓</span>
+            <!-- Center: Main Content -->
+            <div class="panel-center">
+
+                <!-- Page: Copy Trading -->
+                <div class="page active" id="page-copy">
+                    <div class="copy-hero">
+                        <!-- Left: Your Wallet / Setup -->
+                        <div class="copy-card" id="your-wallet-card">
+                            <h3>Your Wallet</h3>
+                            <div id="wallet-status-content">
+                                <!-- Filled by JS -->
+                            </div>
                         </div>
-                        <div class="trader-detail-pseudonym" id="detail-pseudonym"></div>
-                        <div class="trader-detail-bio" id="detail-bio"></div>
-                        <div class="trader-detail-links">
-                            <a href="#" class="trader-link" id="detail-x-link" style="display: none;" target="_blank">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                                <span id="detail-x-username"></span>
-                            </a>
-                            <a href="#" class="trader-link" id="detail-polymarket-link" target="_blank">
-                                View on Polymarket
-                            </a>
-                        </div>
-                        <div class="wallet-address-full" style="margin-top: 12px;">
-                            <span id="detail-wallet">0x...</span>
-                            <button class="copy-btn" onclick="copyWalletAddress()" title="Copy Address">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                            </button>
-                        </div>
-                    </div>
-                    <div class="trader-detail-actions">
-                        <button class="close-panel-btn" onclick="closeTraderPanel()" title="Close">×</button>
-                    </div>
-                </div>
 
-                <!-- Copy Trading Section -->
-                <div class="copy-trading-section">
-                    <div class="copy-trading-info">
-                        <h3>Copy Trading</h3>
-                        <p>Mirror this trader's positions automatically when they make trades</p>
-                    </div>
-                    <div class="copy-trading-toggle">
-                        <span class="toggle-label" id="copy-label">Disabled</span>
-                        <div class="toggle-switch" id="copy-toggle" onclick="toggleCopyTrading()"></div>
-                    </div>
-                </div>
-
-                <!-- Trader Stats -->
-                <div class="trader-stats-grid">
-                    <div class="trader-stat-card">
-                        <div class="trader-stat-value" id="stat-total-trades">0</div>
-                        <div class="trader-stat-label">Total Trades</div>
-                    </div>
-                    <div class="trader-stat-card">
-                        <div class="trader-stat-value" id="stat-volume-traded">$0</div>
-                        <div class="trader-stat-label">Volume Traded</div>
-                    </div>
-                    <div class="trader-stat-card">
-                        <div class="trader-stat-value" id="stat-avg-buy">0¢</div>
-                        <div class="trader-stat-label">Avg Buy Price</div>
-                    </div>
-                    <div class="trader-stat-card">
-                        <div class="trader-stat-value" id="stat-avg-sell">0¢</div>
-                        <div class="trader-stat-label">Avg Sell Price</div>
-                    </div>
-                </div>
-
-                <!-- Recent Markets -->
-                <div class="recent-markets">
-                    <h4>Most Traded Markets</h4>
-                    <div id="recent-markets-list"></div>
-                </div>
-            </div>
-
-            <div class="trades-section">
-                <div class="trades-header">
-                    <h2>Recent Trades</h2>
-                    <div class="filter-buttons">
-                        <button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button>
-                        <button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button>
-                        <button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button>
-                    </div>
-                </div>
-                <table class="trades-table">
-                    <thead>
-                        <tr>
-                            <th>Trader</th>
-                            <th>Market</th>
-                            <th>Side</th>
-                            <th>Amount</th>
-                            <th>Price</th>
-                            <th>Time</th>
-                        </tr>
-                    </thead>
-                    <tbody id="trades-body">
-                        <tr>
-                            <td colspan="6">
-                                <div class="loading">
-                                    <div class="spinner"></div>
+                        <!-- Right: Copy Trading Status -->
+                        <div class="copy-card">
+                            <h3>Copy Trading Status</h3>
+                            <div class="toggle-row" style="margin-bottom:12px;">
+                                <div class="info">
+                                    <h4>Master Switch</h4>
+                                    <p>Enable to start copying trades</p>
                                 </div>
-                            </td>
-                        </tr>
-                    </tbody>
-                </table>
+                                <div class="toggle-switch" id="master-toggle" onclick="toggleMasterCopyTrading()"></div>
+                            </div>
+                            <div class="status-row">
+                                <span class="label">Status</span>
+                                <span class="value" id="copy-status-text"><span class="status-dot off"></span>Inactive</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="label">Traders Being Copied</span>
+                                <span class="value" id="copy-trader-count">0</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="label">Copy %</span>
+                                <span class="value" id="copy-pct-display">10%</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="label">Max Trade Size</span>
+                                <span class="value" id="copy-max-display">$100</span>
+                            </div>
+                            <div class="status-row">
+                                <span class="label">Total Trades Tracked</span>
+                                <span class="value" id="stat-trades">0</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Target wallet detail (shown when a trader is selected) -->
+                    <div class="copy-card" id="target-detail" style="display:none;">
+                        <h3>Target Wallet Details</h3>
+                        <div class="target-header">
+                            <div class="target-avatar" id="target-avatar">?</div>
+                            <div>
+                                <div class="target-name">
+                                    <span id="target-name">--</span>
+                                    <span class="badge-verified" id="target-verified" style="display:none;">&#10003;</span>
+                                </div>
+                                <div class="target-sub" id="target-pseudonym"></div>
+                                <div class="target-links">
+                                    <a href="#" id="target-x-link" style="display:none;" target="_blank">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                                        <span id="target-x-username"></span>
+                                    </a>
+                                    <a href="#" id="target-poly-link" target="_blank">Polymarket Profile</a>
+                                    <a href="#" id="target-polygonscan" target="_blank">Polygonscan</a>
+                                </div>
+                                <div style="margin-top:6px;">
+                                    <span class="wallet-mono">
+                                        <span id="target-wallet">0x...</span>
+                                        <button onclick="copyAddress()" title="Copy">
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                                        </button>
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="target-bio" style="font-size:13px; color:var(--text-secondary); margin-bottom:14px;"></div>
+
+                        <!-- Stats -->
+                        <div class="stats-grid" id="target-stats">
+                            <div class="stat-card"><div class="val" id="ts-trades">0</div><div class="lbl">Trades</div></div>
+                            <div class="stat-card"><div class="val" id="ts-volume">$0</div><div class="lbl">Volume</div></div>
+                            <div class="stat-card"><div class="val" id="ts-buys">0</div><div class="lbl">Buys</div></div>
+                            <div class="stat-card"><div class="val" id="ts-sells">0</div><div class="lbl">Sells</div></div>
+                            <div class="stat-card"><div class="val" id="ts-avgbuy">0c</div><div class="lbl">Avg Buy</div></div>
+                            <div class="stat-card"><div class="val" id="ts-avgsell">0c</div><div class="lbl">Avg Sell</div></div>
+                        </div>
+
+                        <!-- Copy toggle for this trader -->
+                        <div class="toggle-row">
+                            <div class="info">
+                                <h4>Copy This Trader</h4>
+                                <p>Mirror their buys and sells automatically</p>
+                            </div>
+                            <div class="toggle-switch" id="trader-copy-toggle" onclick="toggleTraderCopy()"></div>
+                        </div>
+
+                        <!-- Active positions -->
+                        <h3 style="font-size:13px; font-weight:500; color:var(--text-muted); text-transform:uppercase; letter-spacing:.3px; margin:16px 0 10px;">Active Positions</h3>
+                        <div class="positions-list" id="target-positions">
+                            <div class="empty-state"><p>No position data</p></div>
+                        </div>
+
+                        <!-- Recent markets -->
+                        <h3 style="font-size:13px; font-weight:500; color:var(--text-muted); text-transform:uppercase; letter-spacing:.3px; margin:16px 0 10px;">Most Traded Markets</h3>
+                        <div id="target-markets">
+                            <div class="empty-state"><p>No market data yet</p></div>
+                        </div>
+                    </div>
+
+                    <!-- Wallet Setup (shown when not connected) -->
+                    <div class="copy-card" id="wallet-setup-card" style="display:none;">
+                        <h3>Wallet Setup</h3>
+                        <div class="warning-banner">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                            <p>Your private key is stored locally on your machine and never sent to any external server. It is only used to sign Polymarket CLOB orders.</p>
+                        </div>
+                        <div class="form-group">
+                            <label>Private Key</label>
+                            <input type="password" id="input-private-key" placeholder="Your wallet private key">
+                            <small>Export from reveal.polymarket.com or your Web3 wallet</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Funder Address (Proxy Wallet)</label>
+                            <input type="text" id="input-funder-address" placeholder="0x...">
+                            <small>The Polymarket proxy address that holds your USDC</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Signature Type</label>
+                            <select id="input-signature-type">
+                                <option value="1">Email / Magic Wallet</option>
+                                <option value="2">Browser Wallet (MetaMask, etc.)</option>
+                            </select>
+                        </div>
+                        <button class="btn" onclick="saveCredentials()" style="width:100%;">Save & Connect</button>
+                    </div>
+
+                    <!-- Trade Settings -->
+                    <div class="copy-card" style="margin-top:20px;" id="trade-settings-card">
+                        <h3>Trade Settings</h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label>Copy Percentage (%)</label>
+                                <input type="number" id="input-copy-percentage" min="1" max="100" value="10">
+                                <small>% of the target's trade size</small>
+                            </div>
+                            <div class="form-group">
+                                <label>Max Trade Size ($)</label>
+                                <input type="number" id="input-max-trade-size" min="1" value="100">
+                                <small>Cap per single copy trade</small>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label>Min Trade Size to Copy ($)</label>
+                            <input type="number" id="input-min-trade-size" min="0" value="10">
+                            <small>Ignore trades smaller than this</small>
+                        </div>
+                        <button class="btn btn-outline" onclick="saveTradeSettings()" style="width:100%;">Save Settings</button>
+                    </div>
+
+                    <!-- Copy Trade Log -->
+                    <div class="copy-card" style="margin-top:20px;">
+                        <h3>Copy Trade Log</h3>
+                        <div id="copy-log-content">
+                            <div class="empty-state"><p>No copy trades executed yet</p></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Page: Trade Feed -->
+                <div class="page" id="page-trades">
+                    <div class="trades-header">
+                        <h2>Trade Feed</h2>
+                        <div class="filter-buttons">
+                            <button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button>
+                            <button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button>
+                            <button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button>
+                        </div>
+                    </div>
+                    <table class="trades-table">
+                        <thead>
+                            <tr>
+                                <th>Trader</th>
+                                <th>Market</th>
+                                <th>Side</th>
+                                <th>Amount</th>
+                                <th>Price</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="trades-body">
+                            <tr><td colspan="6"><div style="padding:32px;text-align:center;"><div class="spinner"></div></div></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+
             </div>
         </div>
     </div>
 
     <div class="toast" id="toast"></div>
 
-    <!-- Settings Modal -->
-    <div class="modal-overlay" id="settings-modal">
-        <div class="modal">
-            <div class="modal-header">
-                <h2>Copy Trading Settings</h2>
-                <button class="modal-close" onclick="closeSettingsModal()">x</button>
-            </div>
-            <div class="modal-body">
-                <!-- Master Toggle -->
-                <div class="master-toggle">
-                    <div class="master-toggle-info">
-                        <h4>Copy Trading</h4>
-                        <p>Automatically mirror trades from enabled traders</p>
-                    </div>
-                    <div class="copy-trading-toggle">
-                        <span class="toggle-label" id="master-copy-label">Disabled</span>
-                        <div class="toggle-switch" id="master-copy-toggle" onclick="toggleMasterCopyTrading()"></div>
-                    </div>
-                </div>
-
-                <!-- Credentials Section -->
-                <div class="settings-section">
-                    <h3>
-                        <span class="status-dot" id="credentials-dot"></span>
-                        Polymarket API Credentials
-                    </h3>
-                    
-                    <div class="warning-box">
-                        <p>Your private key is stored locally and never sent to any server. Copy trading executes trades using YOUR wallet.</p>
-                    </div>
-
-                    <div class="credentials-status" id="credentials-status">
-                        <span id="credentials-text">Not configured</span>
-                    </div>
-
-                    <!-- Wallet Balance Display -->
-                    <div id="balance-section" style="display: none; margin-bottom: 16px;">
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
-                            <div style="background: #27272a; border-radius: 8px; padding: 16px; text-align: center;">
-                                <div style="font-size: 24px; font-weight: 700; color: #22c55e;" id="balance-usdc">$0.00</div>
-                                <div style="font-size: 12px; color: #71717a; text-transform: uppercase;">USDC Balance</div>
-                            </div>
-                            <div style="background: #27272a; border-radius: 8px; padding: 16px; text-align: center;">
-                                <div style="font-size: 24px; font-weight: 700; color: #a78bfa;" id="balance-allowance">$0.00</div>
-                                <div style="font-size: 12px; color: #71717a; text-transform: uppercase;">Allowance</div>
-                            </div>
-                        </div>
-                        <button class="btn btn-secondary" onclick="fetchBalance()" style="width: 100%; margin-top: 12px;">
-                            Refresh Balance
-                        </button>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Private Key</label>
-                        <input type="password" id="input-private-key" placeholder="Enter your wallet private key">
-                        <small>Export from reveal.polymarket.com or your Web3 wallet</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Funder Address (Proxy Wallet)</label>
-                        <input type="text" id="input-funder-address" placeholder="0x...">
-                        <small>The address that holds your USDC on Polymarket</small>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Signature Type</label>
-                        <select id="input-signature-type">
-                            <option value="1">Email / Magic Wallet</option>
-                            <option value="2">Browser Wallet (MetaMask, etc.)</option>
-                        </select>
-                    </div>
-
-                    <button class="btn" onclick="saveCredentials()" style="width: 100%;">Save Credentials</button>
-                </div>
-
-                <!-- Trade Settings -->
-                <div class="settings-section">
-                    <h3>Trade Settings</h3>
-
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label>Copy Percentage (%)</label>
-                            <input type="number" id="input-copy-percentage" min="1" max="100" value="10">
-                            <small>% of original trade size</small>
-                        </div>
-                        <div class="form-group">
-                            <label>Max Trade Size ($)</label>
-                            <input type="number" id="input-max-trade-size" min="1" value="100">
-                            <small>Maximum per trade</small>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label>Min Trade Size to Copy ($)</label>
-                        <input type="number" id="input-min-trade-size" min="0" value="10">
-                        <small>Ignore trades smaller than this</small>
-                    </div>
-
-                    <button class="btn btn-secondary" onclick="saveTradeSettings()" style="width: 100%;">Save Trade Settings</button>
-                </div>
-
-                <!-- How to Use -->
-                <div class="settings-section">
-                    <h3>How to Enable Copy Trading for a Trader</h3>
-                    <div class="click-hint">
-                        <strong>Click on any trader</strong> in the sidebar to open their profile, then toggle the Copy Trading switch.
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script>
+        // State
         let allTrades = [];
         let currentFilter = 'all';
         let selectedTraderId = null;
         let currentTraderDetails = null;
         let copyConfig = {};
+        let currentPage = 'copy';
 
-        // Check API status on page load
-        async function checkApiStatus() {
+        // ---- Utilities ----
+        function formatTime(ts) {
+            if (!ts) return '--';
+            const d = new Date(ts * 1000), now = new Date(), diff = now - d;
+            if (diff < 60000) return 'Just now';
+            if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+            if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+            return d.toLocaleDateString('en-US', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+        }
+        function formatUSD(n) {
+            if (!n) return '$0';
+            n = parseFloat(n);
+            if (n >= 1e6) return '$' + (n/1e6).toFixed(2) + 'M';
+            if (n >= 1e3) return '$' + (n/1e3).toFixed(1) + 'K';
+            return '$' + n.toFixed(2);
+        }
+        function truncAddr(a) { return a ? a.slice(0,6) + '...' + a.slice(-4) : ''; }
+        function showToast(msg, type='info') {
+            const t = document.getElementById('toast');
+            t.textContent = msg; t.className = 'toast ' + type + ' show';
+            setTimeout(() => t.classList.remove('show'), 3500);
+        }
+
+        // ---- Page switching ----
+        function switchPage(page) {
+            currentPage = page;
+            document.querySelectorAll('.topbar-nav button').forEach(b => b.classList.toggle('active', b.dataset.page === page));
+            document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.id === 'page-' + page));
+        }
+
+        // ---- Traders ----
+        async function fetchTraders() {
             try {
-                const response = await fetch('/api/config');
-                const config = await response.json();
-                const apiBtn = document.getElementById('api-status-btn');
-                const apiBtnText = document.getElementById('api-btn-text');
-                
-                if (config.has_credentials) {
-                    apiBtn.classList.add('connected');
-                    apiBtnText.textContent = 'API Connected';
-                    // Fetch balance when credentials exist
-                    fetchBalance();
-                } else {
-                    apiBtn.classList.remove('connected');
-                    apiBtnText.textContent = 'Setup API Key';
+                const r = await fetch('/api/traders');
+                const traders = await r.json();
+                renderTraders(traders);
+                // Update copy trader count
+                const copyCount = traders.filter(t => t.copy_trading_enabled).length;
+                document.getElementById('copy-trader-count').textContent = copyCount;
+            } catch(e) { console.error(e); }
+        }
+
+        function renderTraders(traders) {
+            const el = document.getElementById('trader-list');
+            if (!traders.length) {
+                el.innerHTML = '<div class="empty-state" style="padding:24px;"><h3>No wallets tracked</h3><p>Add a wallet address above</p></div>';
+                return;
+            }
+            el.innerHTML = traders.map(t => {
+                const name = t.name || t.pseudonym || truncAddr(t.wallet_address);
+                const init = name.charAt(0).toUpperCase();
+                const av = t.profile_image ? `<img src="${t.profile_image}" alt="${name}" onerror="this.parentElement.innerHTML='${init}'">` : init;
+                const copyBadge = t.copy_trading_enabled ? '<span class="badge badge-copy">COPY</span>' : '';
+                return `
+                <div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})">
+                    <div class="trader-avatar">${av}</div>
+                    <div class="trader-meta">
+                        <div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${copyBadge}</div>
+                        <div class="addr">${truncAddr(t.wallet_address)}</div>
+                    </div>
+                    <button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button>
+                </div>`;
+            }).join('');
+        }
+
+        async function addTrader() {
+            const input = document.getElementById('wallet-input');
+            const val = input.value.trim();
+            if (!val) { showToast('Enter a wallet address', 'error'); return; }
+            try {
+                const r = await fetch('/api/traders', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({wallet_address:val}) });
+                const res = await r.json();
+                if (r.ok) { showToast('Wallet added! Fetching trades...', 'success'); input.value = ''; fetchTraders(); fetchStats(); }
+                else showToast(res.error || 'Failed', 'error');
+            } catch(e) { showToast('Error adding wallet', 'error'); }
+        }
+
+        async function deleteTrader(id) {
+            if (!confirm('Remove this trader and their trades?')) return;
+            try {
+                const r = await fetch('/api/traders/' + id, { method:'DELETE' });
+                if (r.ok) {
+                    showToast('Removed', 'success');
+                    if (selectedTraderId === id) { selectedTraderId = null; document.getElementById('target-detail').style.display = 'none'; }
+                    fetchTraders(); fetchTrades(); fetchStats();
                 }
-            } catch (error) {
-                console.error('Error checking API status:', error);
+            } catch(e) { showToast('Error', 'error'); }
+        }
+
+        document.getElementById('wallet-input').addEventListener('keypress', e => { if (e.key === 'Enter') addTrader(); });
+
+        // ---- Select trader & detail ----
+        function selectTrader(id) {
+            if (selectedTraderId === id) { selectedTraderId = null; document.getElementById('target-detail').style.display = 'none'; }
+            else { selectedTraderId = id; fetchTraderDetails(id); }
+            fetchTraders(); fetchTrades();
+        }
+
+        async function fetchTraderDetails(id) {
+            try {
+                const r = await fetch('/api/traders/' + id + '/details');
+                if (!r.ok) throw new Error();
+                currentTraderDetails = await r.json();
+                renderTargetDetail(currentTraderDetails);
+                // Also fetch positions
+                fetchTargetPositions(currentTraderDetails.wallet_address);
+            } catch(e) { console.error(e); }
+        }
+
+        function renderTargetDetail(t) {
+            const el = document.getElementById('target-detail');
+            el.style.display = 'block';
+
+            const name = t.name || t.pseudonym || truncAddr(t.wallet_address);
+            const init = name.charAt(0).toUpperCase();
+            const avEl = document.getElementById('target-avatar');
+            avEl.innerHTML = t.profile_image ? `<img src="${t.profile_image}" alt="${name}" onerror="this.parentElement.innerHTML='${init}'">` : init;
+
+            document.getElementById('target-name').textContent = name;
+            document.getElementById('target-verified').style.display = t.verified_badge ? 'inline' : 'none';
+
+            const pseudoEl = document.getElementById('target-pseudonym');
+            pseudoEl.textContent = (t.pseudonym && t.pseudonym !== t.name) ? '@' + t.pseudonym : '';
+
+            document.getElementById('target-bio').textContent = t.bio || '';
+
+            const xLink = document.getElementById('target-x-link');
+            if (t.x_username) { xLink.href = 'https://x.com/' + t.x_username; document.getElementById('target-x-username').textContent = '@' + t.x_username; xLink.style.display = 'flex'; }
+            else xLink.style.display = 'none';
+
+            document.getElementById('target-poly-link').href = 'https://polymarket.com/profile/' + t.wallet_address;
+            document.getElementById('target-polygonscan').href = 'https://polygonscan.com/address/' + t.wallet_address;
+            document.getElementById('target-wallet').textContent = t.wallet_address;
+
+            // Toggle
+            const toggle = document.getElementById('trader-copy-toggle');
+            toggle.classList.toggle('active', !!t.copy_trading_enabled);
+
+            // Stats
+            if (t.stats) {
+                document.getElementById('ts-trades').textContent = (t.stats.total_trades || 0).toLocaleString();
+                document.getElementById('ts-volume').textContent = formatUSD(t.stats.volume_traded);
+                document.getElementById('ts-buys').textContent = (t.stats.buy_count || 0).toLocaleString();
+                document.getElementById('ts-sells').textContent = (t.stats.sell_count || 0).toLocaleString();
+                document.getElementById('ts-avgbuy').textContent = (t.stats.avg_buy_price || 0) + 'c';
+                document.getElementById('ts-avgsell').textContent = (t.stats.avg_sell_price || 0) + 'c';
+            }
+
+            // Markets
+            const mkts = document.getElementById('target-markets');
+            if (t.recent_markets && t.recent_markets.length) {
+                mkts.innerHTML = t.recent_markets.map(m => `
+                    <div class="position-item">
+                        <div class="position-icon">${m.icon ? `<img src="${m.icon}" onerror="this.style.display='none'">` : ''}</div>
+                        <div class="position-info">
+                            <div class="title">${m.title || 'Unknown'}</div>
+                            <div class="outcome">${m.outcome || ''}</div>
+                        </div>
+                        <div class="position-pnl">
+                            <div class="size">${formatUSD(m.volume)}</div>
+                            <div class="pnl" style="color:var(--text-muted);">${m.trade_count} trades</div>
+                        </div>
+                    </div>
+                `).join('');
+            } else mkts.innerHTML = '<div class="empty-state"><p>No market data yet</p></div>';
+        }
+
+        async function fetchTargetPositions(wallet) {
+            try {
+                const r = await fetch('/api/positions/' + wallet);
+                if (!r.ok) throw new Error();
+                const positions = await r.json();
+                const el = document.getElementById('target-positions');
+                if (positions.length) {
+                    el.innerHTML = positions.map(p => {
+                        const pnlColor = (p.cashPnl || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+                        const pnlSign = (p.cashPnl || 0) >= 0 ? '+' : '';
+                        return `
+                        <div class="position-item">
+                            <div class="position-icon">${p.icon ? `<img src="${p.icon}" onerror="this.style.display='none'">` : ''}</div>
+                            <div class="position-info">
+                                <div class="title">${p.title || p.conditionId?.slice(0,16) || '...'}</div>
+                                <div class="outcome">${p.outcome || ''} &middot; ${p.size ? parseFloat(p.size).toFixed(1) + ' shares' : ''}</div>
+                            </div>
+                            <div class="position-pnl">
+                                <div class="size">${formatUSD(p.currentValue)}</div>
+                                <div class="pnl" style="color:${pnlColor};">${pnlSign}${formatUSD(p.cashPnl)} (${pnlSign}${((p.percentPnl||0)*100).toFixed(1)}%)</div>
+                            </div>
+                        </div>`;
+                    }).join('');
+                } else el.innerHTML = '<div class="empty-state"><p>No open positions</p></div>';
+            } catch(e) {
+                document.getElementById('target-positions').innerHTML = '<div class="empty-state"><p>Could not fetch positions</p></div>';
             }
         }
 
-        // Settings Modal Functions
-        function openSettingsModal() {
-            document.getElementById('settings-modal').classList.add('active');
-            loadCopyConfig();
+        function copyAddress() {
+            if (!currentTraderDetails) return;
+            navigator.clipboard.writeText(currentTraderDetails.wallet_address).then(() => showToast('Copied!', 'success'));
         }
 
-        function closeSettingsModal() {
-            document.getElementById('settings-modal').classList.remove('active');
-        }
-
-        async function loadCopyConfig() {
+        // ---- Copy Trading Toggle ----
+        async function toggleTraderCopy() {
+            if (!currentTraderDetails) return;
+            const newState = !currentTraderDetails.copy_trading_enabled;
             try {
-                const response = await fetch('/api/config');
-                copyConfig = await response.json();
-                
-                // Update UI
-                document.getElementById('input-copy-percentage').value = copyConfig.copy_percentage || 10;
-                document.getElementById('input-max-trade-size').value = copyConfig.max_trade_size || 100;
-                document.getElementById('input-min-trade-size').value = copyConfig.min_trade_size || 10;
-                
-                // Master toggle
-                const masterToggle = document.getElementById('master-copy-toggle');
-                const masterLabel = document.getElementById('master-copy-label');
-                if (copyConfig.copy_trading_enabled) {
-                    masterToggle.classList.add('active');
-                    masterLabel.textContent = 'Enabled';
-                } else {
-                    masterToggle.classList.remove('active');
-                    masterLabel.textContent = 'Disabled';
+                const r = await fetch('/api/traders/' + currentTraderDetails.id + '/copy', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({enabled:newState})
+                });
+                if (r.ok) {
+                    currentTraderDetails.copy_trading_enabled = newState;
+                    document.getElementById('trader-copy-toggle').classList.toggle('active', newState);
+                    showToast(newState ? 'Copy trading enabled for this wallet' : 'Copy trading disabled', newState ? 'success' : 'info');
+                    fetchTraders();
                 }
-                
-                // Credentials status
-                const credsDot = document.getElementById('credentials-dot');
-                const credsStatus = document.getElementById('credentials-status');
-                const credsText = document.getElementById('credentials-text');
-                
-                // Update API button in header
-                const apiBtn = document.getElementById('api-status-btn');
-                const apiBtnText = document.getElementById('api-btn-text');
-                
-                if (copyConfig.has_credentials) {
-                    credsDot.classList.add('active');
-                    credsStatus.classList.remove('disconnected');
-                    credsStatus.classList.add('connected');
-                    credsText.textContent = 'Connected: ' + copyConfig.funder_address;
-                    apiBtn.classList.add('connected');
-                    apiBtnText.textContent = 'API Connected';
-                    // Show balance section and fetch balance
-                    document.getElementById('balance-section').style.display = 'block';
-                    fetchBalance();
-                } else {
-                    credsDot.classList.remove('active');
-                    credsStatus.classList.remove('connected');
-                    credsStatus.classList.add('disconnected');
-                    credsText.textContent = 'Not configured - Enter your credentials below';
-                    apiBtn.classList.remove('connected');
-                    apiBtnText.textContent = 'Setup API Key';
-                    // Hide balance section
-                    document.getElementById('balance-section').style.display = 'none';
-                    document.getElementById('header-balance').style.display = 'none';
-                }
-            } catch (error) {
-                console.error('Error loading config:', error);
-            }
+            } catch(e) { showToast('Error', 'error'); }
         }
 
         async function toggleMasterCopyTrading() {
             const newState = !copyConfig.copy_trading_enabled;
-            
             try {
-                const response = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ copy_trading_enabled: newState })
-                });
-                
-                if (response.ok) {
+                const r = await fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({copy_trading_enabled:newState}) });
+                if (r.ok) {
                     copyConfig.copy_trading_enabled = newState;
-                    const toggle = document.getElementById('master-copy-toggle');
-                    const label = document.getElementById('master-copy-label');
-                    
-                    if (newState) {
-                        toggle.classList.add('active');
-                        label.textContent = 'Enabled';
-                        showToast('Copy trading enabled globally!', 'success');
-                    } else {
-                        toggle.classList.remove('active');
-                        label.textContent = 'Disabled';
-                        showToast('Copy trading disabled', 'info');
-                    }
+                    const toggle = document.getElementById('master-toggle');
+                    toggle.classList.toggle('active', newState);
+                    updateCopyStatus();
+                    showToast(newState ? 'Copy trading enabled!' : 'Copy trading disabled', newState ? 'success' : 'info');
                 }
-            } catch (error) {
-                showToast('Error updating settings', 'error');
+            } catch(e) { showToast('Error', 'error'); }
+        }
+
+        function updateCopyStatus() {
+            const statusEl = document.getElementById('copy-status-text');
+            if (copyConfig.copy_trading_enabled && copyConfig.has_credentials) {
+                statusEl.innerHTML = '<span class="status-dot on"></span>Active';
+            } else if (copyConfig.copy_trading_enabled && !copyConfig.has_credentials) {
+                statusEl.innerHTML = '<span class="status-dot warn"></span>No Wallet Connected';
+            } else {
+                statusEl.innerHTML = '<span class="status-dot off"></span>Inactive';
             }
         }
 
-        async function saveCredentials() {
-            const privateKey = document.getElementById('input-private-key').value.trim();
-            const funderAddress = document.getElementById('input-funder-address').value.trim();
-            const signatureType = parseInt(document.getElementById('input-signature-type').value);
-            
-            if (!privateKey || !funderAddress) {
-                showToast('Please enter both private key and funder address', 'error');
-                return;
-            }
-            
+        // ---- Config / Wallet Setup ----
+        async function loadConfig() {
             try {
-                const response = await fetch('/api/config/credentials', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        private_key: privateKey, 
-                        funder_address: funderAddress,
-                        signature_type: signatureType
-                    })
-                });
-                
-                if (response.ok) {
-                    showToast('Credentials saved successfully! Fetching balance...', 'success');
-                    document.getElementById('input-private-key').value = '';
-                    loadCopyConfig();
-                    // Auto-fetch balance after credentials are saved
-                    setTimeout(fetchBalance, 500);
-                } else {
-                    const result = await response.json();
-                    showToast(result.error || 'Failed to save credentials', 'error');
-                }
-            } catch (error) {
-                showToast('Error saving credentials', 'error');
+                const r = await fetch('/api/config');
+                copyConfig = await r.json();
+
+                document.getElementById('input-copy-percentage').value = copyConfig.copy_percentage || 10;
+                document.getElementById('input-max-trade-size').value = copyConfig.max_trade_size || 100;
+                document.getElementById('input-min-trade-size').value = copyConfig.min_trade_size || 10;
+                document.getElementById('copy-pct-display').textContent = (copyConfig.copy_percentage || 10) + '%';
+                document.getElementById('copy-max-display').textContent = '$' + (copyConfig.max_trade_size || 100);
+
+                document.getElementById('master-toggle').classList.toggle('active', !!copyConfig.copy_trading_enabled);
+                updateCopyStatus();
+                renderWalletStatus();
+
+                if (copyConfig.has_credentials) fetchBalance();
+            } catch(e) { console.error(e); }
+        }
+
+        function renderWalletStatus() {
+            const el = document.getElementById('wallet-status-content');
+            const setupCard = document.getElementById('wallet-setup-card');
+
+            if (copyConfig.has_credentials) {
+                setupCard.style.display = 'none';
+                el.innerHTML = `
+                    <div class="status-row">
+                        <span class="label">Connection</span>
+                        <span class="value"><span class="status-dot on"></span>Connected</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">Wallet</span>
+                        <span class="value" style="font-family:monospace;font-size:12px;">${copyConfig.funder_address || '...'}</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">USDC Balance</span>
+                        <span class="value" id="inline-balance" style="color:var(--green);">Loading...</span>
+                    </div>
+                    <div class="status-row">
+                        <span class="label">Allowance</span>
+                        <span class="value" id="inline-allowance">Loading...</span>
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:12px;">
+                        <button class="btn btn-outline btn-sm" onclick="fetchBalance()">Refresh Balance</button>
+                        <button class="btn btn-outline btn-sm" onclick="showSetup()">Change Wallet</button>
+                    </div>
+                `;
+            } else {
+                setupCard.style.display = 'block';
+                el.innerHTML = `
+                    <div class="status-row">
+                        <span class="label">Connection</span>
+                        <span class="value"><span class="status-dot off"></span>Not Connected</span>
+                    </div>
+                    <p style="font-size:13px;color:var(--text-muted);margin-top:12px;">Set up your Polymarket wallet below to enable copy trading.</p>
+                `;
             }
+        }
+
+        function showSetup() { document.getElementById('wallet-setup-card').style.display = 'block'; }
+
+        async function saveCredentials() {
+            const pk = document.getElementById('input-private-key').value.trim();
+            const fa = document.getElementById('input-funder-address').value.trim();
+            const st = parseInt(document.getElementById('input-signature-type').value);
+            if (!pk || !fa) { showToast('Enter both private key and funder address', 'error'); return; }
+            try {
+                const r = await fetch('/api/config/credentials', {
+                    method:'POST', headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({private_key:pk, funder_address:fa, signature_type:st})
+                });
+                if (r.ok) {
+                    showToast('Wallet connected! Fetching balance...', 'success');
+                    document.getElementById('input-private-key').value = '';
+                    loadConfig();
+                } else {
+                    const res = await r.json();
+                    showToast(res.error || 'Failed', 'error');
+                }
+            } catch(e) { showToast('Error saving', 'error'); }
         }
 
         async function saveTradeSettings() {
-            const copyPercentage = parseInt(document.getElementById('input-copy-percentage').value);
-            const maxTradeSize = parseFloat(document.getElementById('input-max-trade-size').value);
-            const minTradeSize = parseFloat(document.getElementById('input-min-trade-size').value);
-            
+            const cp = parseInt(document.getElementById('input-copy-percentage').value);
+            const mx = parseFloat(document.getElementById('input-max-trade-size').value);
+            const mn = parseFloat(document.getElementById('input-min-trade-size').value);
             try {
-                const response = await fetch('/api/config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ 
-                        copy_percentage: copyPercentage,
-                        max_trade_size: maxTradeSize,
-                        min_trade_size: minTradeSize
-                    })
-                });
-                
-                if (response.ok) {
-                    showToast('Trade settings saved!', 'success');
-                    loadCopyConfig();
-                } else {
-                    showToast('Failed to save settings', 'error');
-                }
-            } catch (error) {
-                showToast('Error saving settings', 'error');
-            }
+                const r = await fetch('/api/config', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({copy_percentage:cp,max_trade_size:mx,min_trade_size:mn}) });
+                if (r.ok) { showToast('Settings saved!', 'success'); loadConfig(); }
+                else showToast('Failed', 'error');
+            } catch(e) { showToast('Error', 'error'); }
         }
 
-        // Fetch wallet balance
+        // ---- Balance ----
         async function fetchBalance() {
             try {
-                const response = await fetch('/api/balance');
-                const data = await response.json();
-                
-                const balanceSection = document.getElementById('balance-section');
-                const headerBalance = document.getElementById('header-balance');
-                
+                const r = await fetch('/api/balance');
+                const data = await r.json();
                 if (data.success && data.balance) {
-                    // Parse balance - the CLOB client returns balance in smallest unit (6 decimals for USDC)
-                    let usdcBalance = 0;
-                    let allowance = 0;
-                    
+                    let bal = 0, allow = 0;
                     if (typeof data.balance === 'object') {
-                        // Try common response shapes
-                        if (data.balance.balance !== undefined) {
-                            usdcBalance = parseFloat(data.balance.balance) / 1e6;
-                        } else if (data.balance.amount !== undefined) {
-                            usdcBalance = parseFloat(data.balance.amount) / 1e6;
-                        } else {
-                            // Try to use the raw value
-                            usdcBalance = parseFloat(Object.values(data.balance)[0] || 0) / 1e6;
-                        }
-                        
-                        if (data.balance.allowance !== undefined) {
-                            allowance = parseFloat(data.balance.allowance) / 1e6;
-                        }
-                    } else {
-                        usdcBalance = parseFloat(data.balance) / 1e6;
-                    }
-                    
-                    const formattedBalance = '$' + usdcBalance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                    const formattedAllowance = '$' + allowance.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                    
-                    document.getElementById('balance-usdc').textContent = formattedBalance;
-                    document.getElementById('balance-allowance').textContent = formattedAllowance;
-                    document.getElementById('header-balance-amount').textContent = formattedBalance;
-                    
-                    balanceSection.style.display = 'block';
-                    headerBalance.style.display = 'flex';
+                        bal = parseFloat(data.balance.balance || 0) / 1e6;
+                        allow = parseFloat(data.balance.allowance || 0) / 1e6;
+                    } else bal = parseFloat(data.balance) / 1e6;
+
+                    const fmt = (v) => '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+                    document.getElementById('header-balance-amount').textContent = fmt(bal);
+                    document.getElementById('header-balance').style.display = 'flex';
+
+                    const inBal = document.getElementById('inline-balance');
+                    const inAllow = document.getElementById('inline-allowance');
+                    if (inBal) inBal.textContent = fmt(bal);
+                    if (inAllow) inAllow.textContent = fmt(allow);
                 } else {
-                    balanceSection.style.display = 'none';
-                    headerBalance.style.display = 'none';
-                    
-                    if (data.error && data.error !== 'No credentials configured') {
-                        showToast('Balance error: ' + data.error, 'error');
-                    }
+                    document.getElementById('header-balance').style.display = 'none';
+                    if (data.error && data.error !== 'No credentials configured') showToast('Balance: ' + data.error, 'error');
                 }
-            } catch (error) {
-                console.error('Error fetching balance:', error);
-            }
+            } catch(e) { console.error(e); }
         }
 
-        // Close modal on outside click
-        document.getElementById('settings-modal').addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeSettingsModal();
-            }
-        });
-
-        // Format timestamp to readable date
-        function formatTime(timestamp) {
-            if (!timestamp) return 'Unknown';
-            const date = new Date(timestamp * 1000);
-            const now = new Date();
-            const diff = now - date;
-            
-            if (diff < 60000) return 'Just now';
-            if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
-            if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
-            
-            return date.toLocaleDateString('en-US', { 
-                month: 'short', 
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-            });
-        }
-
-        // Format USD amount
-        function formatUSD(amount) {
-            if (!amount) return '$0';
-            if (amount >= 1000000) return '$' + (amount / 1000000).toFixed(2) + 'M';
-            if (amount >= 1000) return '$' + (amount / 1000).toFixed(1) + 'K';
-            return '$' + amount.toFixed(2);
-        }
-
-        // Truncate address
-        function truncateAddress(address) {
-            if (!address) return '';
-            return address.slice(0, 6) + '...' + address.slice(-4);
-        }
-
-        // Show toast notification
-        function showToast(message, type = 'info') {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.className = 'toast ' + type + ' show';
-            setTimeout(() => {
-                toast.classList.remove('show');
-            }, 3000);
-        }
-
-        // Fetch stats
+        // ---- Stats ----
         async function fetchStats() {
             try {
-                const response = await fetch('/api/stats');
-                const stats = await response.json();
-                
-                document.getElementById('stat-traders').textContent = stats.trader_count;
-                document.getElementById('stat-trades').textContent = stats.trade_count.toLocaleString();
-                document.getElementById('stat-volume').textContent = formatUSD(stats.total_volume);
-            } catch (error) {
-                console.error('Error fetching stats:', error);
-            }
+                const r = await fetch('/api/stats');
+                const s = await r.json();
+                document.getElementById('stat-trades').textContent = (s.trade_count || 0).toLocaleString();
+            } catch(e) {}
         }
 
-        // Fetch traders
-        async function fetchTraders() {
-            try {
-                const response = await fetch('/api/traders');
-                const traders = await response.json();
-                renderTraders(traders);
-            } catch (error) {
-                console.error('Error fetching traders:', error);
-                document.getElementById('trader-list').innerHTML = '<div class="empty-state"><p>Error loading traders</p></div>';
-            }
-        }
-
-        // Render traders list
-        function renderTraders(traders) {
-            const container = document.getElementById('trader-list');
-            
-            if (traders.length === 0) {
-                container.innerHTML = '<div class="empty-state"><h3>No traders yet</h3><p>Add a wallet address to start tracking</p></div>';
-                return;
-            }
-            
-            container.innerHTML = traders.map(trader => {
-                const displayName = trader.name || trader.pseudonym || truncateAddress(trader.wallet_address);
-                const initial = displayName.charAt(0).toUpperCase();
-                const avatarContent = trader.profile_image 
-                    ? `<img src="${trader.profile_image}" alt="${displayName}" onerror="this.parentElement.innerHTML='${initial}'">`
-                    : initial;
-                const copyBadge = trader.copy_trading_enabled 
-                    ? '<span style="background: #22c55e; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 4px; margin-left: 6px;">COPY</span>' 
-                    : '';
-                
-                return `
-                    <div class="trader-card ${selectedTraderId === trader.id ? 'active' : ''}" onclick="selectTrader(${trader.id})">
-                        <div class="trader-avatar">${avatarContent}</div>
-                        <div class="trader-info">
-                            <div class="trader-name">
-                                ${displayName}
-                                ${trader.verified_badge ? '<span class="verified-badge">✓</span>' : ''}
-                                ${copyBadge}
-                            </div>
-                            <div class="trader-address">${truncateAddress(trader.wallet_address)}</div>
-                        </div>
-                        <button class="btn btn-danger" onclick="event.stopPropagation(); deleteTrader(${trader.id})">Remove</button>
-                    </div>
-                `;
-            }).join('');
-        }
-
-        // Select trader to filter trades
-        function selectTrader(traderId) {
-            if (selectedTraderId === traderId) {
-                selectedTraderId = null;
-                closeTraderPanel();
-            } else {
-                selectedTraderId = traderId;
-                fetchTraderDetails(traderId);
-            }
-            fetchTraders();
-            fetchTrades();
-        }
-
-        // Fetch detailed trader info
-        async function fetchTraderDetails(traderId) {
-            try {
-                const response = await fetch(`/api/traders/${traderId}/details`);
-                if (!response.ok) throw new Error('Failed to fetch');
-                
-                currentTraderDetails = await response.json();
-                renderTraderPanel(currentTraderDetails);
-            } catch (error) {
-                console.error('Error fetching trader details:', error);
-            }
-        }
-
-        // Render trader detail panel
-        function renderTraderPanel(trader) {
-            const panel = document.getElementById('trader-detail-panel');
-            panel.classList.add('active');
-
-            // Avatar
-            const displayName = trader.name || trader.pseudonym || truncateAddress(trader.wallet_address);
-            const initial = displayName.charAt(0).toUpperCase();
-            const avatarEl = document.getElementById('detail-avatar');
-            if (trader.profile_image) {
-                avatarEl.innerHTML = `<img src="${trader.profile_image}" alt="${displayName}" onerror="this.parentElement.innerHTML='${initial}'">`;
-            } else {
-                avatarEl.textContent = initial;
-            }
-
-            // Name and verified badge
-            document.getElementById('detail-name').textContent = displayName;
-            document.getElementById('detail-verified').style.display = trader.verified_badge ? 'inline' : 'none';
-
-            // Pseudonym
-            const pseudonymEl = document.getElementById('detail-pseudonym');
-            if (trader.pseudonym && trader.pseudonym !== trader.name) {
-                pseudonymEl.textContent = '@' + trader.pseudonym;
-                pseudonymEl.style.display = 'block';
-            } else {
-                pseudonymEl.style.display = 'none';
-            }
-
-            // Bio
-            const bioEl = document.getElementById('detail-bio');
-            bioEl.textContent = trader.bio || 'No bio available';
-
-            // X/Twitter link
-            const xLink = document.getElementById('detail-x-link');
-            const xUsername = document.getElementById('detail-x-username');
-            if (trader.x_username) {
-                xLink.href = `https://x.com/${trader.x_username}`;
-                xUsername.textContent = '@' + trader.x_username;
-                xLink.style.display = 'flex';
-            } else {
-                xLink.style.display = 'none';
-            }
-
-            // Polymarket link
-            document.getElementById('detail-polymarket-link').href = `https://polymarket.com/profile/${trader.wallet_address}`;
-
-            // Wallet address
-            document.getElementById('detail-wallet').textContent = trader.wallet_address;
-
-            // Copy trading toggle
-            const toggle = document.getElementById('copy-toggle');
-            const label = document.getElementById('copy-label');
-            if (trader.copy_trading_enabled) {
-                toggle.classList.add('active');
-                label.textContent = 'Enabled';
-            } else {
-                toggle.classList.remove('active');
-                label.textContent = 'Disabled';
-            }
-
-            // Stats
-            if (trader.stats) {
-                document.getElementById('stat-total-trades').textContent = trader.stats.total_trades.toLocaleString();
-                document.getElementById('stat-volume-traded').textContent = formatUSD(trader.stats.volume_traded);
-                document.getElementById('stat-avg-buy').textContent = trader.stats.avg_buy_price + '¢';
-                document.getElementById('stat-avg-sell').textContent = trader.stats.avg_sell_price + '¢';
-            }
-
-            // Recent markets
-            const marketsContainer = document.getElementById('recent-markets-list');
-            if (trader.recent_markets && trader.recent_markets.length > 0) {
-                marketsContainer.innerHTML = trader.recent_markets.map(market => `
-                    <div class="market-item">
-                        <div class="market-item-icon">
-                            ${market.icon ? `<img src="${market.icon}" alt="Market" onerror="this.style.display='none'">` : ''}
-                        </div>
-                        <div class="market-item-info">
-                            <div class="market-item-title">${market.title || 'Unknown'}</div>
-                            <div class="market-item-outcome">${market.outcome || ''}</div>
-                        </div>
-                        <div class="market-item-stats">
-                            <div class="market-item-volume">${formatUSD(market.volume)}</div>
-                            <div class="market-item-trades">${market.trade_count} trades</div>
-                        </div>
-                    </div>
-                `).join('');
-            } else {
-                marketsContainer.innerHTML = '<p style="color: #71717a; text-align: center; padding: 20px;">No market data yet</p>';
-            }
-        }
-
-        // Close trader panel
-        function closeTraderPanel() {
-            document.getElementById('trader-detail-panel').classList.remove('active');
-            currentTraderDetails = null;
-        }
-
-        // Copy wallet address
-        function copyWalletAddress() {
-            if (!currentTraderDetails) return;
-            navigator.clipboard.writeText(currentTraderDetails.wallet_address).then(() => {
-                showToast('Wallet address copied!', 'success');
-            }).catch(() => {
-                showToast('Failed to copy', 'error');
-            });
-        }
-
-        // Toggle copy trading
-        async function toggleCopyTrading() {
-            if (!currentTraderDetails) {
-                showToast('No trader selected', 'error');
-                return;
-            }
-            
-            const newState = !currentTraderDetails.copy_trading_enabled;
-            
-            try {
-                const response = await fetch(`/api/traders/${currentTraderDetails.id}/copy`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled: newState })
-                });
-                
-                if (response.ok) {
-                    currentTraderDetails.copy_trading_enabled = newState;
-                    const toggle = document.getElementById('copy-toggle');
-                    const label = document.getElementById('copy-label');
-                    
-                    if (newState) {
-                        toggle.classList.add('active');
-                        label.textContent = 'Enabled';
-                        showToast('Copy trading enabled! You will mirror this trader\'s positions.', 'success');
-                    } else {
-                        toggle.classList.remove('active');
-                        label.textContent = 'Disabled';
-                        showToast('Copy trading disabled', 'info');
-                    }
-                    // Refresh trader list to show COPY badge
-                    fetchTraders();
-                } else {
-                    showToast('Failed to update copy trading', 'error');
-                }
-            } catch (error) {
-                showToast('Error updating copy trading', 'error');
-            }
-        }
-
-        // Add new trader
-        async function addTrader() {
-            const input = document.getElementById('wallet-input');
-            const walletAddress = input.value.trim();
-            
-            if (!walletAddress) {
-                showToast('Please enter a wallet address', 'error');
-                return;
-            }
-            
-            try {
-                const response = await fetch('/api/traders', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ wallet_address: walletAddress })
-                });
-                
-                const result = await response.json();
-                
-                if (response.ok) {
-                    showToast('Trader added successfully! Trades will appear after the next fetch cycle.', 'success');
-                    input.value = '';
-                    fetchTraders();
-                    fetchStats();
-                } else {
-                    showToast(result.error || 'Failed to add trader', 'error');
-                }
-            } catch (error) {
-                showToast('Error adding trader', 'error');
-                console.error('Error:', error);
-            }
-        }
-
-        // Delete trader
-        async function deleteTrader(traderId) {
-            if (!confirm('Are you sure you want to remove this trader?')) return;
-            
-            try {
-                const response = await fetch(`/api/traders/${traderId}`, {
-                    method: 'DELETE'
-                });
-                
-                if (response.ok) {
-                    showToast('Trader removed', 'success');
-                    if (selectedTraderId === traderId) {
-                        selectedTraderId = null;
-                    }
-                    fetchTraders();
-                    fetchTrades();
-                    fetchStats();
-                } else {
-                    showToast('Failed to remove trader', 'error');
-                }
-            } catch (error) {
-                showToast('Error removing trader', 'error');
-                console.error('Error:', error);
-            }
-        }
-
-        // Fetch trades
+        // ---- Trades ----
         async function fetchTrades() {
             try {
                 let url = '/api/trades?limit=200';
-                if (selectedTraderId) {
-                    url += `&trader_id=${selectedTraderId}`;
-                }
-                
-                const response = await fetch(url);
-                allTrades = await response.json();
+                if (selectedTraderId) url += '&trader_id=' + selectedTraderId;
+                const r = await fetch(url);
+                allTrades = await r.json();
                 renderTrades();
-            } catch (error) {
-                console.error('Error fetching trades:', error);
+            } catch(e) {
                 document.getElementById('trades-body').innerHTML = '<tr><td colspan="6"><div class="empty-state"><p>Error loading trades</p></div></td></tr>';
             }
         }
 
-        // Filter trades
-        function filterTrades(filter) {
-            currentFilter = filter;
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
-            // Set active on the clicked button by matching data attribute
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                if (btn.getAttribute('data-filter') === filter) {
-                    btn.classList.add('active');
-                }
-            });
+        function filterTrades(f) {
+            currentFilter = f;
+            document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter === f));
             renderTrades();
         }
 
-        // Render trades table
         function renderTrades() {
             const tbody = document.getElementById('trades-body');
-            
-            let filteredTrades = allTrades;
-            if (currentFilter !== 'all') {
-                filteredTrades = allTrades.filter(t => {
-                    const side = (t.side || '').toUpperCase();
-                    return side === currentFilter.toUpperCase();
-                });
-            }
-            
-            if (filteredTrades.length === 0) {
-                tbody.innerHTML = `
-                    <tr>
-                        <td colspan="6">
-                            <div class="empty-state">
-                                <h3>No trades yet</h3>
-                                <p>Trades will appear here once the fetcher script runs</p>
-                            </div>
-                        </td>
-                    </tr>
-                `;
+            let filtered = allTrades;
+            if (currentFilter !== 'all') filtered = allTrades.filter(t => (t.side||'').toUpperCase() === currentFilter.toUpperCase());
+
+            if (!filtered.length) {
+                tbody.innerHTML = '<tr><td colspan="6"><div class="empty-state"><h3>No trades yet</h3><p>Trades appear once the fetcher detects activity</p></div></td></tr>';
                 return;
             }
-            
-            tbody.innerHTML = filteredTrades.map(trade => {
-                const traderName = trade.name || trade.pseudonym || truncateAddress(trade.wallet_address);
-                const traderInitial = traderName.charAt(0).toUpperCase();
-                const avatarContent = trade.profile_image 
-                    ? `<img src="${trade.profile_image}" alt="${traderName}" onerror="this.parentElement.innerHTML='${traderInitial}'">`
-                    : traderInitial;
-                
-                const marketIcon = trade.icon 
-                    ? `<img src="${trade.icon}" alt="Market icon" onerror="this.style.display='none'">`
-                    : '';
-                
+            tbody.innerHTML = filtered.map(trade => {
+                const name = trade.name || trade.pseudonym || truncAddr(trade.wallet_address);
+                const init = name.charAt(0).toUpperCase();
+                const av = trade.profile_image ? `<img src="${trade.profile_image}" alt="${name}" onerror="this.parentElement.innerHTML='${init}'">` : init;
+                const mIcon = trade.icon ? `<img src="${trade.icon}" onerror="this.style.display='none'">` : '';
                 return `
-                    <tr class="trade-row">
-                        <td>
-                            <div class="trade-trader">
-                                <div class="trade-trader-avatar">${avatarContent}</div>
-                                <span>${traderName}</span>
-                                ${trade.verified_badge ? '<span class="verified-badge">✓</span>' : ''}
-                            </div>
-                        </td>
-                        <td>
-                            <div class="trade-market">
-                                <div class="trade-market-icon">${marketIcon}</div>
-                                <div class="trade-market-info">
-                                    <div class="trade-market-title">${trade.title || 'Unknown Market'}</div>
-                                    <div class="trade-market-outcome">${trade.outcome || ''}</div>
-                                </div>
-                            </div>
-                        </td>
-                        <td><span class="side-${(trade.side || '').toLowerCase()}">${(trade.side || '').toUpperCase()}</span></td>
-                        <td class="trade-amount">${formatUSD(trade.usdc_size)}</td>
-                        <td class="trade-price">${trade.price ? (trade.price * 100).toFixed(1) + '¢' : '-'}</td>
-                        <td class="trade-time">${formatTime(trade.timestamp)}</td>
-                    </tr>
-                `;
+                <tr class="trade-row">
+                    <td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span>${trade.verified_badge?'<span class="badge-verified" style="font-size:12px;">&#10003;</span>':''}</div></td>
+                    <td><div class="trade-market"><div class="trade-market-icon">${mIcon}</div><div><div class="trade-market-title">${trade.title||'Unknown'}</div><div class="trade-market-outcome">${trade.outcome||''}</div></div></div></td>
+                    <td><span class="side-${(trade.side||'').toLowerCase()}">${(trade.side||'').toUpperCase()}</span></td>
+                    <td style="font-weight:500;">${formatUSD(trade.usdc_size)}</td>
+                    <td style="color:var(--text-muted);">${trade.price ? (trade.price*100).toFixed(1)+'c' : '-'}</td>
+                    <td style="color:var(--text-muted);font-size:12px;">${formatTime(trade.timestamp)}</td>
+                </tr>`;
             }).join('');
         }
 
-        // Handle enter key in input
-        document.getElementById('wallet-input').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                addTrader();
-            }
-        });
+        // ---- Copy Trade Log ----
+        async function fetchCopyLog() {
+            try {
+                const r = await fetch('/api/copy-trades');
+                const trades = await r.json();
+                const el = document.getElementById('copy-log-content');
+                if (!trades.length) {
+                    el.innerHTML = '<div class="empty-state"><p>No copy trades executed yet</p></div>';
+                    return;
+                }
+                el.innerHTML = `<table class="log-table"><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Original</th><th>Status</th></tr></thead><tbody>${
+                    trades.map(t => `<tr>
+                        <td style="font-size:12px;color:var(--text-muted);">${t.executed_at ? new Date(t.executed_at).toLocaleString() : '--'}</td>
+                        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${t.title || '--'}</td>
+                        <td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td>
+                        <td>${formatUSD(t.original_size)}</td>
+                        <td><span style="color:${t.status==='SUCCESS'?'var(--green)':'var(--red)'};">${t.status}</span></td>
+                    </tr>`).join('')
+                }</tbody></table>`;
+            } catch(e) {}
+        }
 
-        // Initial load
-        fetchStats();
-        fetchTraders();
-        fetchTrades();
-        checkApiStatus();
-
-        // ----- Real-time Server-Sent Events (SSE) -----
-        let eventSource = null;
-        let sseRetries = 0;
-
+        // ---- SSE ----
+        let eventSource = null, sseRetries = 0;
         function connectSSE() {
             const dot = document.getElementById('stream-dot');
             const label = document.getElementById('stream-label');
-
-            if (eventSource) {
-                eventSource.close();
-            }
-
-            dot.style.background = '#eab308';
-            label.textContent = 'Connecting...';
-
+            if (eventSource) eventSource.close();
+            dot.style.background = 'var(--yellow)'; label.textContent = 'Connecting...';
             eventSource = new EventSource('/api/stream');
-
-            eventSource.onopen = function() {
-                dot.style.background = '#22c55e';
-                label.textContent = 'Live';
-                sseRetries = 0;
-            };
-
-            eventSource.onmessage = function(event) {
+            eventSource.onopen = () => { dot.style.background = 'var(--green)'; label.textContent = 'Live'; sseRetries = 0; };
+            eventSource.onmessage = (ev) => {
                 try {
-                    const data = JSON.parse(event.data);
-
-                    if (data.type === 'new_trades' && data.trades && data.trades.length > 0) {
-                        // New trades arrived - refresh everything
-                        dot.style.background = '#6366f1';
-                        label.textContent = 'New trade!';
-                        setTimeout(() => {
-                            dot.style.background = '#22c55e';
-                            label.textContent = 'Live';
-                        }, 2000);
-
-                        fetchStats();
-                        fetchTraders();
-                        fetchTrades();
-
-                        // Show toast notification
-                        const count = data.trades.length;
-                        const latest = data.trades[data.trades.length - 1];
-                        const traderName = latest.name || latest.pseudonym || latest.wallet_address.slice(0, 10) + '...';
-                        const side = latest.side || '?';
-                        const amount = latest.usdc_size ? '$' + parseFloat(latest.usdc_size).toFixed(2) : '';
-                        showToast(`${traderName}: ${side} ${amount} on ${(latest.title || 'market').slice(0, 40)}`, 'success');
+                    const data = JSON.parse(ev.data);
+                    if (data.type === 'new_trades' && data.trades?.length) {
+                        dot.style.background = 'var(--accent)'; label.textContent = 'New trade!';
+                        setTimeout(() => { dot.style.background = 'var(--green)'; label.textContent = 'Live'; }, 2000);
+                        fetchStats(); fetchTraders(); fetchTrades(); fetchCopyLog();
+                        const latest = data.trades[data.trades.length-1];
+                        const tName = latest.name || latest.pseudonym || (latest.wallet_address||'').slice(0,10)+'...';
+                        showToast(`${tName}: ${latest.side||'?'} ${latest.usdc_size?'$'+parseFloat(latest.usdc_size).toFixed(2):''} on ${(latest.title||'market').slice(0,40)}`, 'success');
                     }
-
                     if (data.type === 'heartbeat') {
-                        // Keep status green
-                        dot.style.background = '#22c55e';
-                        label.textContent = 'Live';
-
-                        // Update stat counters if provided
-                        if (data.trade_count !== undefined) {
-                            document.getElementById('stat-trades').textContent = data.trade_count.toLocaleString();
-                        }
-                        if (data.trader_count !== undefined) {
-                            document.getElementById('stat-traders').textContent = data.trader_count.toLocaleString();
-                        }
+                        dot.style.background = 'var(--green)'; label.textContent = 'Live';
+                        if (data.trade_count !== undefined) document.getElementById('stat-trades').textContent = data.trade_count.toLocaleString();
                     }
-                } catch (e) {
-                    console.error('SSE parse error:', e);
-                }
+                } catch(e) {}
             };
-
-            eventSource.onerror = function() {
-                dot.style.background = '#ef4444';
-                label.textContent = 'Reconnecting...';
-                eventSource.close();
-
-                // Exponential backoff reconnect
-                sseRetries++;
-                const delay = Math.min(1000 * Math.pow(2, sseRetries), 30000);
-                console.log('SSE disconnected, reconnecting in ' + delay + 'ms');
-                setTimeout(connectSSE, delay);
+            eventSource.onerror = () => {
+                dot.style.background = 'var(--red)'; label.textContent = 'Reconnecting...';
+                eventSource.close(); sseRetries++;
+                setTimeout(connectSSE, Math.min(1000 * Math.pow(2, sseRetries), 30000));
             };
         }
 
-        // Start SSE connection
+        // ---- Init ----
+        fetchStats(); fetchTraders(); fetchTrades(); loadConfig(); fetchCopyLog();
         connectSSE();
-
-        // Fallback: light refresh every 15s in case SSE misses something
-        setInterval(() => {
-            fetchStats();
-        }, 15000);
+        setInterval(fetchStats, 15000);
     </script>
 </body>
 </html>

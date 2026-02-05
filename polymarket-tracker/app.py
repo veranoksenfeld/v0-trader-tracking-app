@@ -413,6 +413,29 @@ def get_copy_trades():
     return jsonify(trades)
 
 
+@app.route('/api/positions/<wallet>')
+def get_positions(wallet):
+    """Proxy endpoint to fetch target wallet positions from Polymarket Data API (avoids CORS)"""
+    import requests as req
+    try:
+        resp = req.get(
+            'https://data-api.polymarket.com/positions',
+            params={
+                'user': wallet,
+                'sizeThreshold': 0.1,
+                'limit': 20,
+                'sortBy': 'CURRENT',
+                'sortDirection': 'DESC'
+            },
+            timeout=15
+        )
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+        return jsonify([])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/stream')
 def stream():
     """Server-Sent Events endpoint for real-time UI updates.
