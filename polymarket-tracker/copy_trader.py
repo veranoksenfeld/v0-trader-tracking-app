@@ -86,25 +86,40 @@ def get_clob_client(config):
         return None
 
 
-def check_and_print_balance(client):
-    """Check and print the wallet balance"""
-    try:
-        balance_info = client.get_balance_allowance()
-        
-        if isinstance(balance_info, dict):
-            raw_balance = balance_info.get('balance', 0)
-            raw_allowance = balance_info.get('allowance', 0)
-            usdc_balance = float(raw_balance) / 1e6
-            usdc_allowance = float(raw_allowance) / 1e6
-            print(f"  USDC Balance:   ${usdc_balance:,.2f}")
-            print(f"  USDC Allowance: ${usdc_allowance:,.2f}")
-            return usdc_balance
-        else:
-            print(f"  Balance info: {balance_info}")
-            return 0
-    except Exception as e:
-        print(f"  Could not fetch balance: {e}")
-        return 0
+def check_and_print_balance(funder_address):
+    """Check and print the wallet USDC.e balance via Polygon RPC (no CLOB auth needed)"""
+    import requests as req
+    
+    USDC_E_CONTRACT = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
+    BALANCE_OF_SIG = '0x70a08231'
+    padded = funder_address.replace('0x', '').lower().zfill(64)
+    call_data = BALANCE_OF_SIG + padded
+    
+    rpc_urls = [
+        'https://polygon-rpc.com',
+        'https://rpc.ankr.com/polygon',
+        'https://polygon.llamarpc.com',
+    ]
+    
+    for rpc_url in rpc_urls:
+        try:
+            resp = req.post(rpc_url, json={
+                'jsonrpc': '2.0',
+                'method': 'eth_call',
+                'params': [{'to': USDC_E_CONTRACT, 'data': call_data}, 'latest'],
+                'id': 1
+            }, timeout=10)
+            result = resp.json()
+            if 'result' in result and result['result'] != '0x':
+                raw = int(result['result'], 16)
+                usdc = raw / 1e6
+                print(f"  USDC.e Balance: ${usdc:,.2f}")
+                return usdc
+        except Exception:
+            continue
+    
+    print("  Could not fetch balance from any RPC")
+    return 0
 
 
 def execute_copy_trade(client, trade, config):
@@ -201,7 +216,7 @@ def check_and_copy_trades():
         return
     
     # Check balance before executing trades
-    balance = check_and_print_balance(client)
+    balance = check_and_print_balance(config.get('funder_address', ''))
     if balance < 1:
         print("WARNING: Insufficient USDC balance to copy trades. Skipping.")
         conn.close()
@@ -306,15 +321,21 @@ def run_copy_trader():
         print("Use the web interface at http://localhost:5000 to configure.")
     else:
         # Show balance on startup
+        # Check balance via Polygon RPC (no CLOB auth needed)
+        funder = config.get('funder_address', '')
+        print(f"\nWallet: {funder}")
+        print("Fetching balance from Polygon...")
+        balance = check_and_print_balance(funder)
+        if balance < 1:
+            print("\n  WARNING: Low USDC balance. Deposit USDC.e to your funder address to copy trade.")
+        
+        # Test CLOB connection
         print("\nConnecting to Polymarket CLOB API...")
         client = get_clob_client(config)
         if client:
-            print("Wallet balance:")
-            balance = check_and_print_balance(client)
-            if balance < 1:
-                print("\n  WARNING: Low USDC balance. Deposit USDC to your funder address to copy trade.")
+            print("CLOB API connected successfully.")
         else:
-            print("ERROR: Could not connect to CLOB API. Check your credentials.")
+            print("WARNING: Could not connect to CLOB API. Copy trades will not execute.")
     
     print(f"\n[{datetime.now()}] Copy trader running. Checking every 30 seconds.")
     print("Press Ctrl+C to stop.\n")

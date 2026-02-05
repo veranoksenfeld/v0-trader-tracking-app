@@ -949,29 +949,26 @@
             try {
                 const r = await fetch('/api/balance');
                 const data = await r.json();
-                if (data.success && data.balance) {
-                    let bal = 0, allow = 0;
-                    if (typeof data.balance === 'object') {
-                        bal = parseFloat(data.balance.balance || 0) / 1e6;
-                        allow = parseFloat(data.balance.allowance || 0) / 1e6;
-                    } else bal = parseFloat(data.balance) / 1e6;
-
-                    const fmt = (v) => '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+                const fmt = (v) => '$' + v.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+                
+                if (data.success) {
+                    // New RPC-based response has usdc_balance directly
+                    const bal = data.usdc_balance !== undefined ? data.usdc_balance : 0;
+                    
                     document.getElementById('header-balance-amount').textContent = fmt(bal);
                     document.getElementById('header-balance').style.display = 'flex';
 
                     const inBal = document.getElementById('inline-balance');
                     const inAllow = document.getElementById('inline-allowance');
                     if (inBal) inBal.textContent = fmt(bal);
-                    if (inAllow) inAllow.textContent = fmt(allow);
+                    if (inAllow) inAllow.textContent = 'N/A';
                 } else {
                     document.getElementById('header-balance').style.display = 'none';
-                    // Show inline error
                     const inBal = document.getElementById('inline-balance');
                     const inAllow = document.getElementById('inline-allowance');
-                    if (inBal) inBal.textContent = 'Error';
-                    if (inAllow) inAllow.textContent = 'Error';
-                    if (data.error && data.error !== 'No credentials configured') {
+                    if (inBal) inBal.textContent = '--';
+                    if (inAllow) inAllow.textContent = '--';
+                    if (data.error && data.error !== 'No funder address configured') {
                         showToast(data.error, 'error');
                     }
                 }

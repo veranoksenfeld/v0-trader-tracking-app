@@ -356,58 +356,63 @@ def update_credentials():
 
 @app.route('/api/balance', methods=['GET'])
 def get_balance():
-    """Get wallet balance using Polymarket CLOB client"""
+    """Get wallet USDC.e balance directly from Polygon RPC (no CLOB auth needed)"""
+    import requests as req
+    
     config = load_config()
+    funder = config.get('funder_address', '').strip().lower()
     
-    if not config.get('private_key') or not config.get('funder_address'):
-        return jsonify({'error': 'No credentials configured', 'balance': None})
+    if not funder:
+        return jsonify({'error': 'No funder address configured', 'balance': None})
     
-    try:
-        from py_clob_client.client import ClobClient
-        
-        sig_type = config.get('signature_type')
-        if sig_type is None:
-            sig_type = 1
-        sig_type = int(sig_type)
-        
-        private_key = config['private_key']
-        funder = config['funder_address']
-        
-        if not private_key or not funder:
-            return jsonify({'error': 'Private key or funder address is empty', 'balance': None})
-        
-        client = ClobClient(
-            "https://clob.polymarket.com",
-            key=private_key,
-            chain_id=137,
-            signature_type=sig_type,
-            funder=funder
-        )
-        
-        # Derive API creds - this can fail if key/funder mismatch
+    # USDC.e contract on Polygon (what Polymarket uses)
+    USDC_E_CONTRACT = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
+    # balanceOf(address) function selector
+    BALANCE_OF_SIG = '0x70a08231'
+    
+    # Pad the address to 32 bytes for the ABI call
+    padded_address = funder.replace('0x', '').zfill(64)
+    call_data = BALANCE_OF_SIG + padded_address
+    
+    # Use public Polygon RPC
+    rpc_urls = [
+        'https://polygon-rpc.com',
+        'https://rpc.ankr.com/polygon',
+        'https://polygon.llamarpc.com',
+    ]
+    
+    for rpc_url in rpc_urls:
         try:
-            creds = client.create_or_derive_api_creds()
-            if creds is None:
-                return jsonify({'error': 'Failed to derive API credentials. Check your private key and funder address.', 'balance': None})
-            client.set_api_creds(creds)
-        except Exception as cred_err:
-            return jsonify({'error': f'Credential error: {str(cred_err)}', 'balance': None})
-        
-        # Get balance allowances which includes USDC balance info
-        try:
-            balance_info = client.get_balance_allowance()
-        except Exception as bal_err:
-            return jsonify({'error': f'Balance fetch error: {str(bal_err)}', 'balance': None})
-        
-        return jsonify({
-            'success': True,
-            'balance': balance_info,
-            'funder_address': funder
-        })
-    except ImportError:
-        return jsonify({'error': 'py-clob-client not installed. Run: pip install py-clob-client', 'balance': None})
-    except Exception as e:
-        return jsonify({'error': str(e), 'balance': None})
+            resp = req.post(rpc_url, json={
+                'jsonrpc': '2.0',
+                'method': 'eth_call',
+                'params': [
+                    {'to': USDC_E_CONTRACT, 'data': call_data},
+                    'latest'
+                ],
+                'id': 1
+            }, timeout=10)
+            
+            result = resp.json()
+            
+            if 'result' in result and result['result'] != '0x':
+                raw_balance = int(result['result'], 16)
+                # USDC.e has 6 decimals
+                usdc_balance = raw_balance / 1e6
+                
+                return jsonify({
+                    'success': True,
+                    'balance': {
+                        'balance': str(raw_balance),
+                        'allowance': '0'
+                    },
+                    'usdc_balance': round(usdc_balance, 2),
+                    'funder_address': funder
+                })
+        except Exception:
+            continue
+    
+    return jsonify({'error': 'Could not reach Polygon RPC', 'balance': None})
 
 
 @app.route('/api/copy-trades', methods=['GET'])
