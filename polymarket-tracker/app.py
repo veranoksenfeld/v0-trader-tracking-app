@@ -1485,7 +1485,7 @@ def get_stats():
     return jsonify({
         'trader_count': trader_count, 'trade_count': trade_count,
         'total_volume': round(total_volume, 2), 'last_fetch': last_fetch,
-        'fetcher_mode': 'Alchemy' if ALCHEMY_API_KEY else 'Activity API',
+        'fetcher_mode': 'Data API' + (' + Alchemy' if ALCHEMY_API_KEY else ''),
         'alchemy_configured': bool(ALCHEMY_API_KEY),
     })
 
@@ -1787,10 +1787,65 @@ def engine_stop():
 
 @app.route('/api/positions/<wallet>')
 def get_positions(wallet):
+    """Get active positions (size > threshold) from Polymarket Data API."""
     try:
         resp = req.get(
             'https://data-api.polymarket.com/positions',
-            params={'user': wallet, 'sizeThreshold': 0.1, 'limit': 20, 'sortBy': 'CURRENT', 'sortDirection': 'DESC'},
+            params={'user': wallet, 'sizeThreshold': 0.1, 'limit': 50, 'sortBy': 'CURRENT', 'sortDirection': 'DESC'},
+            timeout=15
+        )
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+        return jsonify([])
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/positions/<wallet>/closed')
+def get_closed_positions(wallet):
+    """Get closed/redeemable positions from Polymarket Data API."""
+    try:
+        resp = req.get(
+            'https://data-api.polymarket.com/positions',
+            params={'user': wallet, 'redeemable': 'true', 'limit': 50, 'sortBy': 'CURRENT', 'sortDirection': 'DESC'},
+            timeout=15
+        )
+        positions = []
+        if resp.status_code == 200:
+            positions = resp.json() if isinstance(resp.json(), list) else []
+        # Also get zero-size positions (fully sold/resolved)
+        resp2 = req.get(
+            'https://data-api.polymarket.com/positions',
+            params={'user': wallet, 'sizeThreshold': 0, 'limit': 50, 'sortBy': 'CASHPNL', 'sortDirection': 'DESC'},
+            timeout=15
+        )
+        if resp2.status_code == 200:
+            all_pos = resp2.json() if isinstance(resp2.json(), list) else []
+            # Closed = size is 0 or very small, or redeemable, or has realized PnL
+            active_assets = {p.get('asset') for p in positions}
+            for p in all_pos:
+                size = float(p.get('size', 0))
+                realized = float(p.get('realizedPnl', 0))
+                if p.get('asset') not in active_assets and (size < 0.01 or abs(realized) > 0):
+                    positions.append(p)
+                    active_assets.add(p.get('asset'))
+        return jsonify(positions)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/activity/<wallet>')
+def get_activity(wallet):
+    """Get trade activity from Polymarket Data API (authoritative source)."""
+    limit = request.args.get('limit', 100, type=int)
+    side = request.args.get('side', None)
+    try:
+        params = {'user': wallet, 'type': 'TRADE', 'limit': limit, 'sortBy': 'TIMESTAMP', 'sortDirection': 'DESC'}
+        if side:
+            params['side'] = side
+        resp = req.get(
+            'https://data-api.polymarket.com/activity',
+            params=params,
             timeout=15
         )
         if resp.status_code == 200:

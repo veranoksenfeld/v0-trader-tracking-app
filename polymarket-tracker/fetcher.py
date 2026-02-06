@@ -48,6 +48,7 @@ POLYMARKET_CONTRACTS = {CTF_EXCHANGE_NEGRISK, CTF_EXCHANGE_LEGACY, NEG_RISK_ADAP
 
 # Polymarket REST fallback
 ACTIVITY_API = 'https://data-api.polymarket.com/activity'
+TRADES_API   = 'https://data-api.polymarket.com/trades'
 PROFILE_API  = 'https://gamma-api.polymarket.com/public-profile'
 GAMMA_MARKETS_API = 'https://gamma-api.polymarket.com/markets'
 
@@ -439,10 +440,11 @@ def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
 
 
 # ---------------------------------------------------------------------------
-# Polymarket Activity API fallback (original approach)
+# Polymarket Data API (primary source)
 # ---------------------------------------------------------------------------
 
 def _fetch_activity(address, limit=50):
+    """Fetch from Data API /activity endpoint (uses profile address)."""
     try:
         r = requests.get(ACTIVITY_API, params={'user': address, 'type': 'TRADE', 'limit': limit}, timeout=15)
         if r.status_code == 200:
@@ -451,6 +453,55 @@ def _fetch_activity(address, limit=50):
     except Exception:
         pass
     return []
+
+
+def _fetch_trades_api(address, limit=100):
+    """Fetch from Data API /trades endpoint (uses profile address)."""
+    try:
+        r = requests.get(TRADES_API, params={'user': address, 'limit': limit}, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def insert_trade_from_trades_api(trader_id, trade, conn):
+    """Insert a trade from Polymarket /trades API format. Returns True if new."""
+    tx_hash = trade.get('transactionHash')
+    if not tx_hash:
+        return False
+    with _db_write_lock:
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
+        if cursor.fetchone():
+            return False
+
+        side_raw = (trade.get('side') or '').upper()
+        direction = 'OPEN' if side_raw == 'BUY' else 'CLOSE'
+        cid = trade.get('conditionId') or ''
+        # Calculate usdcSize from size * price (trades endpoint doesn't always have usdcSize)
+        size = trade.get('size') or 0
+        price = trade.get('price') or 0
+        usdc_size = float(size) * float(price) if size and price else 0
+
+        cursor.execute('''
+            INSERT INTO trades (
+                trader_id, transaction_hash, side, size, price, usdc_size,
+                timestamp, title, slug, icon, event_slug, outcome,
+                outcome_index, condition_id, asset, direction, end_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            trader_id, tx_hash,
+            trade.get('side'), size, price, usdc_size,
+            trade.get('timestamp'), trade.get('title'), trade.get('slug'),
+            trade.get('icon'), trade.get('eventSlug'), trade.get('outcome'),
+            trade.get('outcomeIndex'), cid,
+            trade.get('asset'), direction, ''
+        ))
+        conn.commit()
+    return True
 
 
 def fetch_end_date_for_condition(condition_id):
@@ -496,42 +547,84 @@ def insert_trade_from_activity(trader_id, trade, conn):
 
 
 # ---------------------------------------------------------------------------
-# Combined fetch: Alchemy first, Activity API fallback
+# Combined fetch: Data API first, Alchemy fallback
 # ---------------------------------------------------------------------------
 
 def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     """
     Fetch trades for a trader.
     Strategy:
-    1. Try Alchemy ERC-1155 transfers on BOTH EOA + proxy wallet
-    2. Fallback to Polymarket Activity API on BOTH addresses
+    1. Try Polymarket Data API /trades endpoint (authoritative, uses profile address)
+    2. Try Polymarket Data API /activity endpoint
+    3. Fallback to Alchemy ERC-1155 transfers
     """
     total_new = 0
     eoa = wallet_address.lower()
 
-    # Resolve proxy wallet (Polymarket uses proxy wallets for on-chain trades)
-    proxy = resolve_proxy_wallet(wallet_address)
+    print(f"  [Fetcher] Fetching for {eoa[:10]}...")
 
-    # Build list of addresses to scan (deduplicated)
-    wallets_to_scan = [eoa]
-    if proxy and proxy != eoa:
-        wallets_to_scan.append(proxy)
+    # --- Method 1: Polymarket /trades API (primary - most accurate) ---
+    try:
+        trades = _fetch_trades_api(eoa, limit)
+        print(f"  [Trades API] {eoa[:10]}... returned {len(trades)} trade(s)")
+        for trade in trades:
+            if insert_trade_from_trades_api(trader_id, trade, conn):
+                total_new += 1
+                side = trade.get('side', '?')
+                outcome = trade.get('outcome', '')
+                title = trade.get('title', 'Unknown')[:40]
+                size = trade.get('size', 0)
+                price = trade.get('price', 0)
+                usdc = float(size) * float(price) if size and price else 0
+                price_c = f"{float(price)*100:.0f}c" if price else '?'
+                print(f"    NEW: {side} {outcome} ${usdc:.2f} @ {price_c} on {title}")
+                log_event('TRADE', f'{side} {outcome} ${usdc:.2f} @ {price_c} on {title}')
 
-    print(f"  [Fetcher] Scanning {len(wallets_to_scan)} address(es) for {eoa[:10]}...")
-    for w in wallets_to_scan:
-        print(f"    -> {w}")
+        if total_new > 0:
+            print(f"  [Trades API] {total_new} new trade(s) for {eoa[:10]}...")
+            log_event('INFO', f'Data API: {total_new} new trade(s) for {eoa[:10]}')
+            return total_new
+    except Exception as e:
+        print(f"  [Trades API] Error for {eoa[:10]}...: {e}")
 
-    # --- Method 1: Alchemy ---
+    # --- Method 2: Polymarket /activity API ---
+    try:
+        activities = _fetch_activity(eoa, limit)
+        print(f"  [Activity API] {eoa[:10]}... returned {len(activities)} trade(s)")
+        for trade in activities:
+            if insert_trade_from_activity(trader_id, trade, conn):
+                total_new += 1
+                side = trade.get('side', '?')
+                outcome = trade.get('outcome', '')
+                title = trade.get('title', 'Unknown')[:40]
+                usdc = trade.get('usdcSize', 0)
+                price = trade.get('price', 0)
+                price_c = f"{float(price)*100:.0f}c" if price else '?'
+                print(f"    NEW: {side} {outcome} ${usdc} @ {price_c} on {title}")
+                log_event('TRADE', f'{side} {outcome} ${usdc} @ {price_c} on {title}')
+        time.sleep(0.3)
+
+        if total_new > 0:
+            print(f"  [Activity API] {total_new} new trade(s) for {eoa[:10]}...")
+            log_event('INFO', f'Activity API: {total_new} new trade(s) for {eoa[:10]}')
+            return total_new
+    except Exception as e:
+        print(f"  [Activity API] Error for {eoa[:10]}...: {e}")
+
+    # --- Method 3: Alchemy fallback (on-chain ERC-1155 transfers) ---
     if ALCHEMY_API_KEY:
+        proxy = resolve_proxy_wallet(wallet_address)
+        wallets_to_scan = [eoa]
+        if proxy and proxy != eoa:
+            wallets_to_scan.append(proxy)
+
         try:
             for wallet in wallets_to_scan:
-                # Fetch tokens received (BUY)
                 buys, _ = fetch_erc1155_transfers(wallet, direction='to')
                 print(f"  [Alchemy] {wallet[:10]}... BUY transfers: {len(buys)}")
                 new_buys = process_alchemy_transfers(trader_id, wallet, buys, 'BUY', conn)
                 total_new += new_buys
 
-                # Fetch tokens sent (SELL)
                 sells, _ = fetch_erc1155_transfers(wallet, direction='from')
                 print(f"  [Alchemy] {wallet[:10]}... SELL transfers: {len(sells)}")
                 new_sells = process_alchemy_transfers(trader_id, wallet, sells, 'SELL', conn)
@@ -540,36 +633,9 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
             if total_new > 0:
                 print(f"  [Alchemy] {total_new} new trade(s) for {eoa[:10]}...")
                 log_event('INFO', f'Alchemy: {total_new} new trade(s) for {eoa[:10]}')
-            else:
-                print(f"  [Alchemy] No new trades for {eoa[:10]}...")
-            return total_new
         except Exception as e:
             print(f"  [Alchemy] Error for {eoa[:10]}...: {e}")
-            log_event('WARN', f'Alchemy error, falling back to Activity API', str(e))
-
-    # --- Method 2: Polymarket Activity API fallback ---
-    try:
-        for addr in wallets_to_scan:
-            trades = _fetch_activity(addr, limit)
-            print(f"  [Activity API] {addr[:10]}... returned {len(trades)} trade(s)")
-            for trade in trades:
-                if insert_trade_from_activity(trader_id, trade, conn):
-                    total_new += 1
-                    side = trade.get('side', '?')
-                    outcome = trade.get('outcome', '')
-                    title = trade.get('title', 'Unknown')[:40]
-                    usdc = trade.get('usdcSize', 0)
-                    price = trade.get('price', 0)
-                    price_c = f"{float(price)*100:.0f}c" if price else '?'
-                    print(f"    NEW: {side} {outcome} ${usdc} @ {price_c} on {title}")
-                    log_event('TRADE', f'{side} {outcome} ${usdc} @ {price_c} on {title}')
-            time.sleep(0.3)
-
-        if total_new > 0:
-            print(f"  [Activity API] {total_new} new trade(s) for {eoa[:10]}...")
-    except Exception as e:
-        print(f"  [Activity API] Error for {eoa[:10]}...: {e}")
-        log_event('ERROR', f'Fetch error for {eoa[:10]}', str(e))
+            log_event('WARN', f'Alchemy error for {eoa[:10]}', str(e))
 
     return total_new
 
@@ -629,9 +695,9 @@ def poll_loop():
 
 def run_fetcher():
     print("=" * 60)
-    print("  Polymarket Trade Fetcher (Alchemy + Activity API)")
+    print("  Polymarket Trade Fetcher (Data API + Alchemy fallback)")
     print("=" * 60)
-    mode = 'Alchemy (Polygon)' if ALCHEMY_API_KEY else 'Activity API only'
+    mode = 'Data API + Alchemy fallback' if ALCHEMY_API_KEY else 'Data API only'
     print(f"  Mode: {mode}")
     log_event('INFO', 'Fetcher started', f'Mode: {mode}')
 
