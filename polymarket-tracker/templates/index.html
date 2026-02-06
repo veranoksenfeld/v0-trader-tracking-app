@@ -458,24 +458,47 @@
         }).join('');
         else mkts.innerHTML='<div class="empty-state"><p>No data yet</p></div>';
     }
-    async function fetchPositions(w) { try{const r=await fetch('/api/positions/'+w); const pos=await r.json(); const el=document.getElementById('target-positions'); if(Array.isArray(pos)&&pos.length) el.innerHTML=pos.map(p=>{const c=(p.cashPnl||0)>=0?'var(--green)':'var(--red)',s=(p.cashPnl||0)>=0?'+':''; const link=p.slug?'https://polymarket.com/event/'+p.slug:'#'; return `<div class="position-item"><div class="position-icon">${p.icon?`<img src="${p.icon}" onerror="this.style.display='none'">`:''}</div><div class="position-info"><div class="title"><a href="${link}" target="_blank" style="color:var(--text);">${p.title||'...'}</a></div><div class="outcome">${p.outcome||''} &middot; ${p.size?parseFloat(p.size).toFixed(1)+' shares':''} <a href="${link}" target="_blank" class="market-link">View</a></div></div><div class="position-pnl"><div class="size">${formatUSD(p.currentValue)}</div><div class="pnl" style="color:${c};">${s}${formatUSD(p.cashPnl)} (${s}${((p.percentPnl||0)*100).toFixed(1)}%)</div></div></div>`;}).join(''); else el.innerHTML='<div class="empty-state"><p>No open positions</p></div>';} catch(e){document.getElementById('target-positions').innerHTML='<div class="empty-state"><p>Could not fetch</p></div>';} }
+    async function fetchPositions(w) {
+        const el=document.getElementById('target-positions');
+        try{
+            const r=await fetch('/api/positions/'+w); const pos=await r.json();
+            if(Array.isArray(pos)&&pos.length){
+                el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Avg</th><th>Current</th><th>P/L</th></tr></thead><tbody>${pos.map(p=>{
+                    const link=p.slug?'https://polymarket.com/event/'+p.slug:'#';
+                    const iconHtml=p.icon?`<img src="${p.icon}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;margin-right:6px;" onerror="this.style.display='none'">`:'';
+                    const avg=p.avgPrice?parseFloat(p.avgPrice):0;
+                    const cur=p.curPrice?parseFloat(p.curPrice):0;
+                    const pnl=parseFloat(p.cashPnl||0);
+                    const pnlColor=pnl>=0?'var(--green)':'var(--red)';
+                    const pnlSign=pnl>=0?'+':'';
+                    const outBadge=outcomeBadge(p.outcome,p.side||'BUY');
+                    return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(p.title||'Unknown').slice(0,60)}</a><div style="margin-top:2px;">${outBadge}</div></td><td style="color:var(--text-sec);font-weight:500;">${(avg*100).toFixed(1)}c</td><td style="font-weight:600;">${(cur*100).toFixed(1)}c</td><td style="color:${pnlColor};font-weight:700;">${pnlSign}$${Math.abs(pnl).toFixed(2)}</td></tr>`;
+                }).join('')}</tbody></table>`;
+            } else el.innerHTML='<div class="empty-state"><p>No active positions</p></div>';
+        } catch(e){el.innerHTML='<div class="empty-state"><p>Could not fetch positions</p></div>';}
+    }
     async function fetchClosedPositionsTarget(w) {
         const el=document.getElementById('target-closed-positions');
         try{
             const r=await fetch('/api/positions/'+w+'/closed');
             const pos=await r.json();
             if(Array.isArray(pos)&&pos.length){
-                el.innerHTML=pos.map(p=>{
-                    const pnl=parseFloat(p.realizedPnl||p.cashPnl||0);
-                    const c=pnl>=0?'var(--green)':'var(--red)';
-                    const s=pnl>=0?'+':'';
+                el.innerHTML=`<table class="activity-table"><thead><tr><th>Result</th><th>Market</th><th>Total Bet</th><th>Amount Won</th></tr></thead><tbody>${pos.map(p=>{
                     const link=p.slug?'https://polymarket.com/event/'+p.slug:'#';
-                    const size=parseFloat(p.size||0);
-                    const sizeLabel=size<0.01?'Resolved':'Holding '+size.toFixed(1);
-                    return `<div class="position-item"><div class="position-icon">${p.icon?`<img src="${p.icon}" onerror="this.style.display='none'">`:''}</div><div class="position-info"><div class="title"><a href="${link}" target="_blank" style="color:var(--text);">${p.title||'...'}</a></div><div class="outcome">${p.outcome||''} &middot; ${sizeLabel} <a href="${link}" target="_blank" class="market-link">View</a></div></div><div class="position-pnl"><div class="size">${s}${formatUSD(Math.abs(pnl))}</div><div class="pnl" style="color:${c};">Realized PnL</div></div></div>`;
-                }).join('');
+                    const iconHtml=p.icon?`<img src="${p.icon}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;margin-right:6px;" onerror="this.style.display='none'">`:'';
+                    const pnl=parseFloat(p.cashPnl||p.realizedPnl||0);
+                    const initialVal=parseFloat(p.initialValue||0);
+                    const currentVal=parseFloat(p.currentValue||0);
+                    const totalBet=initialVal>0?initialVal:Math.abs(pnl);
+                    const amountWon=pnl>0?pnl+totalBet:Math.max(0,totalBet+pnl);
+                    const isWin=pnl>0;
+                    const resultLabel=pnl>0?'Won':'Lost';
+                    const resultColor=pnl>0?'var(--green)':'var(--red)';
+                    const resultBg=pnl>0?'rgba(34,197,94,0.12)':'rgba(239,68,68,0.12)';
+                    return `<tr><td><span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;background:${resultBg};color:${resultColor};">${resultLabel}</span></td><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(p.title||'Unknown').slice(0,55)}</a></td><td style="font-weight:500;">${formatUSD(totalBet)}</td><td style="color:${resultColor};font-weight:700;">${isWin?formatUSD(amountWon):'$0.00'}</td></tr>`;
+                }).join('')}</tbody></table>`;
             } else el.innerHTML='<div class="empty-state"><p>No closed positions</p></div>';
-        }catch(e){el.innerHTML='<div class="empty-state"><p>Could not fetch</p></div>';}
+        }catch(e){el.innerHTML='<div class="empty-state"><p>Could not fetch closed positions</p></div>';}
     }
     async function fetchTargetActivity(w) {
         const el=document.getElementById('target-activity');
@@ -483,16 +506,16 @@
             const r=await fetch('/api/activity/'+w+'?limit=50');
             const acts=await r.json();
             if(Array.isArray(acts)&&acts.length){
-                el.innerHTML=`<table class="activity-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Price</th><th>USDC</th></tr></thead><tbody>${acts.map(a=>{
-                    const ts=a.timestamp?new Date(a.timestamp*1000).toLocaleString():'--';
-                    const link=a.slug?'https://polymarket.com/event/'+(a.eventSlug||a.slug):'#';
+                el.innerHTML=`<table class="activity-table"><thead><tr><th>Type</th><th>Market</th><th>Amount</th></tr></thead><tbody>${acts.map(a=>{
+                    const ts=a.timestamp?formatTime(a.timestamp):'--';
+                    const link=a.slug?'https://polymarket.com/event/'+(a.event_slug||a.slug):'#';
                     const sideUp=(a.side||'').toUpperCase();
-                    const sideBadge=sideUp==='BUY'?'<span class="side-buy-badge">BUY</span>':sideUp==='SELL'?'<span class="side-sell-badge">SELL</span>':'<span>'+sideUp+'</span>';
-                    const oBadge=outcomeBadge(a.outcome,a.side);
-                    const usdcVal=a.usdcSize?formatUSD(a.usdcSize):(a.size&&a.price?formatUSD(parseFloat(a.size)*parseFloat(a.price)):'--');
-                    return '<tr><td style="white-space:nowrap;color:var(--text-dim);font-size:11px;">'+ts+'</td><td><a href="'+link+'" target="_blank" style="color:var(--text);font-size:12px;">'+(a.title||'Unknown')+'</a></td><td>'+oBadge+'</td><td>'+sideBadge+'</td><td>'+(a.size?parseFloat(a.size).toFixed(1):'--')+'</td><td style="color:var(--text-dim);">'+(a.price?(parseFloat(a.price)*100).toFixed(1)+'c':'--')+'</td><td style="font-weight:500;">'+usdcVal+'</td></tr>';
+                    const typeBadge=sideUp==='BUY'?'<span class="side-buy-badge">BUY</span>':sideUp==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideUp||'--'}</span>`;
+                    const usdcVal=a.usdc_size?formatUSD(a.usdc_size):(a.size&&a.price?formatUSD(parseFloat(a.size)*parseFloat(a.price)):'--');
+                    const iconHtml=a.icon?`<img src="${a.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
+                    return `<tr><td>${typeBadge}</td><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-size:12px;">${(a.title||'Unknown').slice(0,55)}</a><span style="display:block;font-size:10px;color:var(--text-dim);margin-top:1px;">${ts}</span></td><td style="font-weight:600;">${usdcVal}</td></tr>`;
                 }).join('')}</tbody></table>`;
-            } else el.innerHTML='<div class="empty-state"><p>No activity found for this wallet</p></div>';
+            } else el.innerHTML='<div class="empty-state"><p>No activity found</p></div>';
         }catch(e){el.innerHTML='<div class="empty-state"><p>Could not fetch activity</p></div>';}
     }
     function copyAddr() { if(currentDetail)navigator.clipboard.writeText(currentDetail.wallet_address).then(()=>showToast('Copied!','success')); }
@@ -702,9 +725,9 @@
         const el=document.getElementById('closed-positions-content');
         const closed=allCopyTrades.filter(t=>t.result==='WIN'||t.result==='LOSS');
         document.getElementById('closed-count').textContent=closed.length+' position'+(closed.length!==1?'s':'');
-        if(!closed.length){el.innerHTML='<div class="empty-state"><p>No closed positions yet. Trades will auto-close when markets resolve.</p></div>';return;}
+        if(!closed.length){el.innerHTML='<div class="empty-state"><p>No closed positions yet</p></div>';return;}
 
-        // Group by market (condition_id) for a cleaner view
+        // Group by market (condition_id)
         const grouped={};
         closed.forEach(t=>{
             const key=t.condition_id||t.market_title||t.id;
@@ -722,34 +745,16 @@
             return lastB-lastA;
         });
 
-        el.innerHTML=entries.map(g=>{
+        el.innerHTML=`<table class="activity-table"><thead><tr><th>Result</th><th>Market</th><th>Total Bet</th><th>Amount Won</th></tr></thead><tbody>${entries.map(g=>{
             const link=polyLink(g.market_slug,g.event_slug);
-            const iconHtml=g.icon?`<img src="${g.icon}" onerror="this.style.display='none'">`:'';
-            const pnlColor=g.total_pnl>=0?'var(--green)':'var(--red)';
-            const pnlSign=g.total_pnl>=0?'+':'';
-            const resultLabel=g.wins>0&&g.losses===0?'WIN':g.losses>0&&g.wins===0?'LOSS':'MIXED';
-            const resultColor=resultLabel==='WIN'?'var(--green)':resultLabel==='LOSS'?'var(--red)':'var(--yellow)';
-            const tradeCount=g.trades.length;
-            const lastClosed=g.trades.reduce((latest,t)=>{const d=new Date(t.closed_at||0);return d>latest?d:latest;},new Date(0));
-
-            return `<div class="closed-summary-row">
-                <div class="closed-icon">${iconHtml}</div>
-                <div class="closed-info">
-                    <div class="title"><a href="${link}" target="_blank" style="color:var(--text);">${g.market_title||'Unknown Market'}</a></div>
-                    <div class="meta">
-                        <span>${g.outcome||''}</span>
-                        <span style="color:${resultColor};font-weight:600;">${resultLabel}</span>
-                        <span>${tradeCount} trade${tradeCount!==1?'s':''}</span>
-                        <span>Bet: ${formatUSD(g.total_bet)}</span>
-                        <span>${lastClosed.getTime()>0?lastClosed.toLocaleDateString():''}</span>
-                    </div>
-                </div>
-                <div class="closed-result">
-                    <div class="pnl" style="color:${pnlColor};">${pnlSign}${formatUSD(Math.abs(g.total_pnl))}</div>
-                    <div class="label">PnL</div>
-                </div>
-            </div>`;
-        }).join('');
+            const iconHtml=g.icon?`<img src="${g.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
+            const isWin=g.total_pnl>0;
+            const resultLabel=isWin?'Won':'Lost';
+            const resultColor=isWin?'var(--green)':'var(--red)';
+            const resultBg=isWin?'rgba(34,197,94,0.12)':'rgba(239,68,68,0.12)';
+            const amountWon=isWin?g.total_pnl+g.total_bet:0;
+            return `<tr><td><span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;background:${resultBg};color:${resultColor};">${resultLabel}</span></td><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td style="font-weight:500;">${formatUSD(g.total_bet)}</td><td style="color:${resultColor};font-weight:700;">${isWin?formatUSD(amountWon):'$0.00'}</td></tr>`;
+        }).join('')}</tbody></table>`;
     }
 
     // ---- System Logs ----

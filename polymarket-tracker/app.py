@@ -1776,15 +1776,19 @@ def engine_stop():
 
 @app.route('/api/positions/<wallet>')
 def get_positions(wallet):
-    """Get active positions (size > threshold) from Polymarket Data API."""
+    """Get active positions from Polymarket Data API.
+    Returns: title, outcome, icon, slug, size, avgPrice, curPrice, cashPnl, percentPnl, initialValue, currentValue
+    """
     try:
         resp = req.get(
             'https://data-api.polymarket.com/positions',
-            params={'user': wallet, 'sizeThreshold': 0.1, 'limit': 50, 'sortBy': 'CURRENT', 'sortDirection': 'DESC'},
+            params={'user': wallet.lower(), 'sizeThreshold': 0.1, 'limit': 50, 'sortBy': 'CURRENT', 'sortDirection': 'DESC'},
             timeout=15
         )
         if resp.status_code == 200:
-            return jsonify(resp.json())
+            data = resp.json()
+            if isinstance(data, list):
+                return jsonify(data)
         return jsonify([])
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1792,56 +1796,53 @@ def get_positions(wallet):
 
 @app.route('/api/positions/<wallet>/closed')
 def get_closed_positions(wallet):
-    """Get closed/redeemable positions from Polymarket Data API."""
+    """Get closed positions from Polymarket Data API.
+    Closed = size near zero or fully redeemed.
+    """
     try:
+        # Get ALL positions including zero-size
         resp = req.get(
             'https://data-api.polymarket.com/positions',
-            params={'user': wallet, 'redeemable': 'true', 'limit': 50, 'sortBy': 'CURRENT', 'sortDirection': 'DESC'},
+            params={'user': wallet.lower(), 'sizeThreshold': 0, 'limit': 100, 'sortBy': 'CASHPNL', 'sortDirection': 'DESC'},
             timeout=15
         )
-        positions = []
-        if resp.status_code == 200:
-            positions = resp.json() if isinstance(resp.json(), list) else []
-        # Also get zero-size positions (fully sold/resolved)
-        resp2 = req.get(
-            'https://data-api.polymarket.com/positions',
-            params={'user': wallet, 'sizeThreshold': 0, 'limit': 50, 'sortBy': 'CASHPNL', 'sortDirection': 'DESC'},
-            timeout=15
-        )
-        if resp2.status_code == 200:
-            all_pos = resp2.json() if isinstance(resp2.json(), list) else []
-            # Closed = size is 0 or very small, or redeemable, or has realized PnL
-            active_assets = {p.get('asset') for p in positions}
-            for p in all_pos:
-                size = float(p.get('size', 0))
-                realized = float(p.get('realizedPnl', 0))
-                if p.get('asset') not in active_assets and (size < 0.01 or abs(realized) > 0):
-                    positions.append(p)
-                    active_assets.add(p.get('asset'))
-        return jsonify(positions)
+        if resp.status_code != 200:
+            return jsonify([])
+
+        all_pos = resp.json() if isinstance(resp.json(), list) else []
+        closed = []
+        for p in all_pos:
+            size = float(p.get('size', 0))
+            # Closed = size is 0 or negligible (fully sold or resolved)
+            if size < 0.01:
+                closed.append(p)
+        return jsonify(closed)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/activity/<wallet>')
 def get_activity(wallet):
-    """Get trade activity from Polymarket Data API (authoritative source)."""
+    """Get trade activity from local DB for this wallet (reliable source)."""
     limit = request.args.get('limit', 100, type=int)
-    side = request.args.get('side', None)
-    try:
-        params = {'user': wallet, 'type': 'TRADE', 'limit': limit, 'sortBy': 'TIMESTAMP', 'sortDirection': 'DESC'}
-        if side:
-            params['side'] = side
-        resp = req.get(
-            'https://data-api.polymarket.com/activity',
-            params=params,
-            timeout=15
-        )
-        if resp.status_code == 200:
-            return jsonify(resp.json())
+    conn = get_db()
+    cursor = conn.cursor()
+    # Get trader_id for this wallet
+    cursor.execute('SELECT id FROM traders WHERE LOWER(wallet_address) = ?', (wallet.lower(),))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
         return jsonify([])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    trader_id = row['id']
+    cursor.execute('''
+        SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym, tr.profile_image
+        FROM trades t JOIN traders tr ON t.trader_id = tr.id
+        WHERE t.trader_id = ?
+        ORDER BY t.timestamp DESC LIMIT ?
+    ''', (trader_id, limit))
+    trades = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return jsonify(trades)
 
 
 @app.route('/api/stream')
