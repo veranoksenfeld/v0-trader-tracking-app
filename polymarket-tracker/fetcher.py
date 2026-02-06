@@ -179,6 +179,23 @@ def detect_trade_direction(trader_id, trade, conn):
     return 'UNKNOWN'
 
 
+def fetch_end_date_for_condition(condition_id):
+    """Fetch end date from Gamma API for a condition_id."""
+    if not condition_id:
+        return ''
+    try:
+        r = requests.get('https://gamma-api.polymarket.com/markets',
+                         params={'condition_id': condition_id}, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            markets = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+            if markets:
+                return markets[0].get('endDate') or markets[0].get('end_date_iso') or ''
+    except Exception:
+        pass
+    return ''
+
+
 def insert_trade(trader_id, trade, conn):
     """Insert a single trade into the database. Returns True if new."""
     tx_hash = trade.get('transactionHash')
@@ -194,20 +211,24 @@ def insert_trade(trader_id, trade, conn):
         # Detect position direction
         direction = detect_trade_direction(trader_id, trade, conn)
 
+        # Fetch end_date from Gamma API
+        cid = trade.get('conditionId') or ''
+        end_date = fetch_end_date_for_condition(cid)
+
         cursor.execute('''
             INSERT INTO trades (
                 trader_id, transaction_hash, side, size, price, usdc_size,
                 timestamp, title, slug, icon, event_slug, outcome,
-                outcome_index, condition_id, asset, direction
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                outcome_index, condition_id, asset, direction, end_date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             trader_id, tx_hash,
             trade.get('side'), trade.get('size'), trade.get('price'),
             trade.get('usdcSize'), trade.get('timestamp'),
             trade.get('title'), trade.get('slug'), trade.get('icon'),
             trade.get('eventSlug'), trade.get('outcome'),
-            trade.get('outcomeIndex'), trade.get('conditionId'),
-            trade.get('asset'), direction
+            trade.get('outcomeIndex'), cid,
+            trade.get('asset'), direction, end_date
         ))
         conn.commit()
     return True

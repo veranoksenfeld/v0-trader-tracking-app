@@ -352,6 +352,7 @@ def init_db():
         ]),
         ('trades', [
             ('direction', 'TEXT', "'UNKNOWN'"),
+            ('end_date', 'TEXT', 'NULL'),
         ]),
         ('copy_trades', [
             ('trader_name', 'TEXT', "''"), ('market_title', 'TEXT', "''"),
@@ -378,6 +379,25 @@ def init_db():
                     pass
 
     conn.commit()
+
+    # Backfill end_date for trades that have condition_id but no end_date
+    cursor.execute('''SELECT DISTINCT condition_id FROM trades
+                      WHERE condition_id IS NOT NULL AND condition_id != ''
+                      AND (end_date IS NULL OR end_date = '')
+                      LIMIT 30''')
+    backfill_cids = [row[0] for row in cursor.fetchall()]
+    if backfill_cids:
+        print(f"  Backfilling end_date for {len(backfill_cids)} condition_ids...")
+        for cid in backfill_cids:
+            try:
+                ed = get_market_end_date(cid)
+                if ed:
+                    cursor.execute('UPDATE trades SET end_date = ? WHERE condition_id = ? AND (end_date IS NULL OR end_date = "")', (ed, cid))
+            except Exception:
+                pass
+        conn.commit()
+        print(f"  Backfill done")
+
     conn.close()
 
 
@@ -857,13 +877,11 @@ def get_market_metadata(condition_id):
         return _market_metadata_cache[condition_id]
     try:
         # Always query without closed filter - short-duration markets (BTC Up/Down) close fast
-        print(f"  [gamma] Fetching metadata for cid={condition_id[:30]}...")
         resp = req.get(
             'https://gamma-api.polymarket.com/markets',
             params={'condition_id': condition_id},
             timeout=15
         )
-        print(f"  [gamma] Response status={resp.status_code}, content_length={len(resp.text)}")
         markets = []
         if resp.status_code == 200:
             data = resp.json()
@@ -873,9 +891,7 @@ def get_market_metadata(condition_id):
                 markets = [data]
 
         if not markets:
-            print(f"  [gamma] No market found for condition_id={condition_id[:20]}... Trying with slug fallback...")
-            # Some condition_ids might need different query format
-            # Try stripping 0x prefix
+            # Try stripping/adding 0x prefix as fallback
             alt_cid = condition_id[2:] if condition_id.startswith('0x') else '0x' + condition_id
             resp3 = req.get(
                 'https://gamma-api.polymarket.com/markets',
@@ -886,16 +902,13 @@ def get_market_metadata(condition_id):
                 data3 = resp3.json()
                 if isinstance(data3, list) and data3:
                     markets = data3
-                    print(f"  [gamma] Found via alt_cid={alt_cid[:20]}")
             if not markets:
-                print(f"  [gamma] No market found at all for {condition_id[:20]}")
                 # Cache empty so we don't retry
                 _market_end_date_cache[condition_id] = ''
                 return None
 
         m = markets[0]
         end_date = m.get('endDate') or m.get('end_date_iso') or ''
-        print(f"  [end_date] Found market: question={m.get('question','')[:60]}, endDate={end_date}, closed={m.get('closed')}")
 
         outcomes_raw = m.get('outcomes', '[]')
         outcome_prices_raw = m.get('outcomePrices', '[]')
@@ -923,7 +936,7 @@ def get_market_metadata(condition_id):
         _market_metadata_cache[condition_id] = meta
         return meta
     except Exception as e:
-        print(f"  [end_date] ERROR fetching metadata for {condition_id[:20]}: {e}")
+        pass
         log_event('ENGINE', 'WARN', 'Market metadata fetch error', str(e))
     return None
 
@@ -1161,16 +1174,18 @@ def add_trader():
                                     continue
                                 side = (trade.get('side') or '').upper()
                                 direction = 'OPEN' if side == 'BUY' else 'CLOSE'
+                                cid = trade.get('conditionId') or ''
+                                end_date = get_market_end_date(cid) if cid else ''
                                 cur.execute('''INSERT INTO trades (trader_id, transaction_hash, side, size, price,
                                     usdc_size, timestamp, title, slug, icon, event_slug, outcome,
-                                    outcome_index, condition_id, asset, direction)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                    outcome_index, condition_id, asset, direction, end_date)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                                     (tid, tx, trade.get('side'), trade.get('size'), trade.get('price'),
                                      trade.get('usdcSize'), trade.get('timestamp'),
                                      trade.get('title'), trade.get('slug'), trade.get('icon'),
                                      trade.get('eventSlug'), trade.get('outcome'),
-                                     trade.get('outcomeIndex'), trade.get('conditionId'),
-                                     trade.get('asset'), direction))
+                                     trade.get('outcomeIndex'), cid,
+                                     trade.get('asset'), direction, end_date))
                                 total_new += 1
                 except Exception:
                     pass
@@ -1231,16 +1246,18 @@ def fetch_trader_trades(trader_id):
                                     continue
                                 side = (trade.get('side') or '').upper()
                                 direction = 'OPEN' if side == 'BUY' else 'CLOSE'
+                                cid = trade.get('conditionId') or ''
+                                end_date = get_market_end_date(cid) if cid else ''
                                 cur.execute('''INSERT INTO trades (trader_id, transaction_hash, side, size, price,
                                     usdc_size, timestamp, title, slug, icon, event_slug, outcome,
-                                    outcome_index, condition_id, asset, direction)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                    outcome_index, condition_id, asset, direction, end_date)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                                     (trader_id, tx, trade.get('side'), trade.get('size'), trade.get('price'),
                                      trade.get('usdcSize'), trade.get('timestamp'),
                                      trade.get('title'), trade.get('slug'), trade.get('icon'),
                                      trade.get('eventSlug'), trade.get('outcome'),
-                                     trade.get('outcomeIndex'), trade.get('conditionId'),
-                                     trade.get('asset'), direction))
+                                     trade.get('outcomeIndex'), cid,
+                                     trade.get('asset'), direction, end_date))
                                 total_new += 1
                 except Exception:
                     pass
@@ -1287,41 +1304,7 @@ def get_trades():
         ''', (limit,))
     trades = [dict(row) for row in cursor.fetchall()]
     conn.close()
-
-    # Collect unique condition_ids we need end_dates for
-    cids_to_fetch = set()
-    cids_with = 0
-    cids_without = 0
-    for t in trades:
-        cid = t.get('condition_id')
-        if cid:
-            if cid not in _market_end_date_cache:
-                cids_to_fetch.add(cid)
-                cids_without += 1
-            else:
-                cids_with += 1
-
-    print(f"  [trades API] {len(trades)} trades, {cids_with} cached end_dates, {cids_without} missing, fetching {min(len(cids_to_fetch),10)}")
-
-    # Fetch missing end_dates in bulk (up to 10 to avoid slow responses)
-    for cid in list(cids_to_fetch)[:10]:
-        try:
-            ed = get_market_end_date(cid)
-            print(f"  [trades API] Fetched end_date for {cid[:20]}: {ed}")
-        except Exception as e:
-            print(f"  [trades API] Error fetching end_date for {cid[:20]}: {e}")
-
-    # Enrich trades with end_date from cache
-    enriched = 0
-    for t in trades:
-        cid = t.get('condition_id')
-        if cid and cid in _market_end_date_cache:
-            t['end_date'] = _market_end_date_cache[cid]
-            enriched += 1
-        else:
-            t['end_date'] = ''
-
-    print(f"  [trades API] Enriched {enriched}/{len(trades)} trades with end_date")
+    # end_date is now stored directly in the trades table
     return jsonify(trades)
 
 
@@ -1375,10 +1358,9 @@ def debug_trades_sample():
 @app.route('/api/market-end-date/<condition_id>', methods=['GET'])
 def api_get_market_end_date(condition_id):
     """Fetch and return end date + metadata for a market by condition_id."""
-    print(f"  [API] /api/market-end-date/{condition_id[:20]}...")
     meta = get_market_metadata(condition_id)
     if meta:
-        result = {
+        return jsonify({
             'condition_id': condition_id,
             'end_date': meta.get('end_date', ''),
             'outcomes': meta.get('outcomes', []),
@@ -1386,10 +1368,7 @@ def api_get_market_end_date(condition_id):
             'question': meta.get('question', ''),
             'start_date': meta.get('start_date', ''),
             'event_start_time': meta.get('event_start_time', ''),
-        }
-        print(f"  [API] Returning end_date={result['end_date']} for {meta.get('question','')[:50]}")
-        return jsonify(result)
-    print(f"  [API] No metadata found for {condition_id[:20]}")
+        })
     return jsonify({'condition_id': condition_id, 'end_date': ''})
 
 
@@ -1766,14 +1745,8 @@ def stream():
                 new_trades = [dict(row) for row in cursor.fetchall()]
                 if new_trades:
                     last_trade_id = new_trades[-1]['id']
-                    # Enrich with end_date
-                    for nt in new_trades:
-                        cid = nt.get('condition_id')
-                        if cid and cid in _market_end_date_cache:
-                            nt['end_date'] = _market_end_date_cache[cid]
-                        else:
-                            nt['end_date'] = ''
-                    yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
+                            # end_date is already in the DB/query result
+                            yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
 
                 # New unified log entries
                 try:
