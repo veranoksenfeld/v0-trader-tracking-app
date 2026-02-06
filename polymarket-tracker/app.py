@@ -1825,23 +1825,37 @@ def get_closed_positions(wallet):
 
 @app.route('/api/activity/<wallet>')
 def get_activity(wallet):
-    """Get trade activity from Polymarket Data API (authoritative source)."""
+    """Get trade activity from local DB instead of Polymarket Data API."""
     limit = request.args.get('limit', 100, type=int)
     side = request.args.get('side', None)
-    try:
-        params = {'user': wallet, 'type': 'TRADE', 'limit': limit, 'sortBy': 'TIMESTAMP', 'sortDirection': 'DESC'}
-        if side:
-            params['side'] = side
-        resp = req.get(
-            'https://data-api.polymarket.com/activity',
-            params=params,
-            timeout=15
-        )
-        if resp.status_code == 200:
-            return jsonify(resp.json())
+    conn = get_db()
+    cursor = conn.cursor()
+    # Find trader by wallet address
+    cursor.execute('SELECT id FROM traders WHERE wallet_address = ?', (wallet.lower(),))
+    trader_row = cursor.fetchone()
+    if not trader_row:
+        conn.close()
         return jsonify([])
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    trader_id = trader_row['id']
+    if side:
+        cursor.execute('''
+            SELECT transaction_hash, side, size, price, usdc_size, timestamp,
+                   title, slug, icon, event_slug, outcome, outcome_index,
+                   condition_id, asset, direction
+            FROM trades WHERE trader_id = ? AND UPPER(side) = ?
+            ORDER BY timestamp DESC LIMIT ?
+        ''', (trader_id, side.upper(), limit))
+    else:
+        cursor.execute('''
+            SELECT transaction_hash, side, size, price, usdc_size, timestamp,
+                   title, slug, icon, event_slug, outcome, outcome_index,
+                   condition_id, asset, direction
+            FROM trades WHERE trader_id = ?
+            ORDER BY timestamp DESC LIMIT ?
+        ''', (trader_id, limit))
+    trades = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(trades)
 
 
 @app.route('/api/stream')
