@@ -222,7 +222,7 @@
                     <div class="pnl-card"><div class="val" style="color:var(--yellow);" id="pnl-open">0</div><div class="lbl">Open</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-total">$0.00</div><div class="lbl">Total PnL</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-winrate">0%</div><div class="lbl">Win Rate</div></div>
-                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-max-per-event">--</div><div class="lbl">Max/Event</div></div>
+                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-max-events">--</div><div class="lbl">Max Events</div></div>
                 </div>
 
                 <div class="grid-2">
@@ -245,7 +245,7 @@
                         <div class="status-row" id="copy-pct-row"><span class="label">Copy %</span><span class="value"><input class="config-input" id="copy-pct-input" type="number" min="1" max="100" value="10" onchange="updateCopyPct()"><span style="color:var(--text-dim);font-size:11px;">%</span></span></div>
                         <div class="status-row" id="fixed-size-row" style="display:none;"><span class="label">Fixed Amount</span><span class="value">$<input class="config-input" id="fixed-size-input" type="number" min="0.1" step="0.1" value="10" onchange="updateFixedSize()"></span></div>
                         <div class="status-row"><span class="label">Max Trade $</span><span class="value">$<input class="config-input" id="copy-max-input" type="number" min="1" value="100" onchange="updateMaxTrade()"></span></div>
-                        <div class="status-row"><span class="label">Max Trades per Event</span><span class="value"><input class="config-input" id="max-per-event-input" type="number" min="0" value="0" onchange="updateMaxPerEvent()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
+                        <div class="status-row"><span class="label">Max Events</span><span class="value"><input class="config-input" id="max-events-input" type="number" min="0" value="0" onchange="updateMaxEvents()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
                         <div class="status-row"><span class="label">Prob Sizing</span><span class="value"><div class="toggle" id="prob-toggle" onclick="toggleProbSizing()" style="width:36px;height:20px;"></div></span></div>
@@ -435,9 +435,9 @@
         const v=parseFloat(document.getElementById('fixed-size-input').value)||10;
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixed_trade_size:v})});showToast('Fixed size: $'+v,'success');}catch(e){}
     }
-    async function updateMaxPerEvent() {
-        const v=parseInt(document.getElementById('max-per-event-input').value)||0;
-        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trades_per_event:v})});config.max_trades_per_event=v;showToast(v>0?'Max per event: '+v:'Max per event: unlimited','success');}catch(e){}
+    async function updateMaxEvents() {
+        const v=parseInt(document.getElementById('max-events-input').value)||0;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_events:v})});config.max_events=v;showToast(v>0?'Max events: '+v:'Max events: unlimited','success');}catch(e){}
     }
 
     function updateStatus() {
@@ -455,7 +455,7 @@
         try{const r=await fetch('/api/config'); config=await r.json();
         document.getElementById('copy-pct-input').value=config.copy_percentage||10;
         document.getElementById('copy-max-input').value=config.max_trade_size||100;
-        document.getElementById('max-per-event-input').value=config.max_trades_per_event||0;
+        document.getElementById('max-events-input').value=config.max_events||0;
         document.getElementById('fixed-size-input').value=config.fixed_trade_size||10;
         document.getElementById('engine-copied').textContent=(config.trades_copied||0).toLocaleString();
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
@@ -659,7 +659,7 @@
         document.getElementById('pnl-total').style.color=tp>=0?'var(--green)':'var(--red)';
         document.getElementById('pnl-winrate').textContent=(s.win_rate||0)+'%';
         document.getElementById('pnl-winrate').style.color=wrColor(s.win_rate||0);
-        const mpe=config.max_trades_per_event||0; document.getElementById('pnl-max-per-event').textContent=mpe>0?mpe:'--';
+        const me=config.max_events||0; document.getElementById('pnl-max-events').textContent=me>0?me:'--';
         }catch(e){}
     }
 

@@ -817,17 +817,21 @@ def copy_trading_loop():
                 side_str = (trade.get('side') or '').upper()
                 token_id = trade.get('asset') or trade.get('condition_id') or ''
 
-                # Check max trades per event limit
-                max_per_event = config.get('max_trades_per_event', 0)
-                if max_per_event > 0 and trade.get('condition_id'):
+                # Check max events limit (total distinct events with open positions)
+                max_events = config.get('max_events', 0)
+                if max_events > 0 and trade.get('condition_id'):
                     conn2 = get_db()
                     c2 = conn2.cursor()
+                    c2.execute("SELECT COUNT(DISTINCT condition_id) as c FROM copy_trades WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''")
+                    total_events = c2.fetchone()['c']
+                    # Check if this is a new event (not already in open trades)
                     c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
                                (trade['condition_id'],))
-                    event_open = c2.fetchone()['c']
+                    already_in = c2.fetchone()['c']
                     conn2.close()
-                    if event_open >= max_per_event:
-                        log_event('ENGINE', 'SKIP', f'Max open trades per event reached ({event_open}/{max_per_event})',
+                    # If this is a new event and we're at the limit, skip
+                    if already_in == 0 and total_events >= max_events:
+                        log_event('ENGINE', 'SKIP', f'Max events limit reached ({total_events}/{max_events})',
                                   f'{trade.get("title", "")[:50]}')
                         ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                         config[ts_key] = trade['timestamp']
@@ -1160,7 +1164,7 @@ def get_config():
         'copy_strategy': config.get('copy_strategy', 'PERCENTAGE'),
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
-        'max_trades_per_event': config.get('max_trades_per_event', 0),
+        'max_events': config.get('max_events', 0),
     }
     return jsonify(safe)
 
@@ -1192,9 +1196,9 @@ def update_config():
         config['fixed_trade_size'] = max(0.1, float(data['fixed_trade_size']))
     if 'prob_sizing_enabled' in data:
         config['prob_sizing_enabled'] = bool(data['prob_sizing_enabled'])
-    if 'max_trades_per_event' in data:
-        config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
-        log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
+    if 'max_events' in data:
+        config['max_events'] = max(0, int(data['max_events']))
+        log_event('APP', 'INFO', f'Max events set to {config["max_events"]}')
     save_config(config)
     return jsonify({'success': True})
 
