@@ -1014,7 +1014,11 @@ def get_market_metadata(condition_id):
 
 
 def check_resolved_markets():
-    """Check Gamma API for resolved markets and auto-close matching copy trades."""
+    """Check Gamma API for resolved markets and update PnL info without auto-closing.
+    Trades remain OPEN so the user can manually close them via the UI."""
+    config = load_config()
+    auto_close = config.get('auto_close_on_resolve', False)
+
     conn = get_db()
     cursor = conn.cursor()
     # Get all OPEN copy trades with condition_ids
@@ -1065,7 +1069,7 @@ def check_resolved_markets():
                 except Exception:
                     pass
 
-            # Close all OPEN trades for this condition_id
+            # Update PnL info for OPEN trades (only auto-close if config allows it)
             conn = get_db()
             cursor = conn.cursor()
             cursor.execute('''
@@ -1082,10 +1086,8 @@ def check_resolved_markets():
 
                 # Determine final price based on resolution
                 if winning_outcome and trade_outcome:
-                    # If our trade's outcome matches the winning outcome, final price = 1.0
                     final_price = 1.0 if trade_outcome.lower() == winning_outcome.lower() else 0.0
                 else:
-                    # Fallback: use first outcome price
                     final_price = 0.5
 
                 # Calculate PnL
@@ -1097,16 +1099,26 @@ def check_resolved_markets():
                 pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
                 actual_result = 'WIN' if pnl >= 0 else 'LOSS'
 
-                cursor.execute('''
-                    UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?,
-                    current_price = ?, pnl = ?, pnl_pct = ?
-                    WHERE id = ?
-                ''', (datetime.now().isoformat(), actual_result, final_price,
-                      round(pnl, 4), round(pnl_pct, 2), trade['id']))
-
-                log_event('ENGINE', actual_result,
-                          f'Market resolved - auto-closed trade #{trade["id"]}',
-                          f'Outcome: {winning_outcome or "?"} | Entry: {entry_price:.2f} Final: {final_price:.2f} PnL: ${pnl:.2f}')
+                if auto_close:
+                    # Auto-close: mark as closed with result
+                    cursor.execute('''
+                        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?,
+                        current_price = ?, pnl = ?, pnl_pct = ?
+                        WHERE id = ?
+                    ''', (datetime.now().isoformat(), actual_result, final_price,
+                          round(pnl, 4), round(pnl_pct, 2), trade['id']))
+                    log_event('ENGINE', actual_result,
+                              f'Market resolved - auto-closed trade #{trade["id"]}',
+                              f'Outcome: {winning_outcome or "?"} | Entry: {entry_price:.2f} Final: {final_price:.2f} PnL: ${pnl:.2f}')
+                else:
+                    # Don't close - just update current_price and PnL for display
+                    cursor.execute('''
+                        UPDATE copy_trades SET current_price = ?, pnl = ?, pnl_pct = ?
+                        WHERE id = ?
+                    ''', (final_price, round(pnl, 4), round(pnl_pct, 2), trade['id']))
+                    log_event('ENGINE', 'INFO',
+                              f'Market resolved - trade #{trade["id"]} PnL updated (not auto-closed)',
+                              f'Outcome: {winning_outcome or "?"} | Entry: {entry_price:.2f} Final: {final_price:.2f} PnL: ${pnl:.2f}')
 
             conn.commit()
             conn.close()
