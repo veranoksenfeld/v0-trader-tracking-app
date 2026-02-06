@@ -292,11 +292,14 @@
                 <div class="card" style="margin-top:16px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
                         <h3 style="margin-bottom:0;">Copy Trade History</h3>
-                        <div class="filter-buttons">
-                            <button class="filter-btn active" data-ctf="all" onclick="filterCopyTrades('all')">All</button>
-                            <button class="filter-btn" data-ctf="OPEN" onclick="filterCopyTrades('OPEN')">Open</button>
-                            <button class="filter-btn" data-ctf="WIN" onclick="filterCopyTrades('WIN')">Wins</button>
-                            <button class="filter-btn" data-ctf="LOSS" onclick="filterCopyTrades('LOSS')">Losses</button>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <button class="btn btn-sm btn-outline" style="font-size:10px;color:var(--cyan);border-color:rgba(6,182,212,0.3);white-space:nowrap;" onclick="checkResolutions()" id="check-res-btn">Check Resolutions</button>
+                            <div class="filter-buttons">
+                                <button class="filter-btn active" data-ctf="all" onclick="filterCopyTrades('all')">All</button>
+                                <button class="filter-btn" data-ctf="OPEN" onclick="filterCopyTrades('OPEN')">Open</button>
+                                <button class="filter-btn" data-ctf="WIN" onclick="filterCopyTrades('WIN')">Wins</button>
+                                <button class="filter-btn" data-ctf="LOSS" onclick="filterCopyTrades('LOSS')">Losses</button>
+                            </div>
                         </div>
                     </div>
                     <div id="copy-trades-content"><div class="empty-state"><p>No copy trades yet</p></div></div>
@@ -504,6 +507,25 @@
                 <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--text-dim);">Or enable <strong style="color:var(--orange);cursor:pointer;" onclick="toggleMock()">Mock Mode</strong> to test without a wallet</div>
             </div>`;
         }
+    }
+
+    // ---- Market Resolution Checker ----
+    async function checkResolutions() {
+        const btn=document.getElementById('check-res-btn');
+        if(btn){btn.disabled=true;btn.textContent='Checking...';}
+        try{
+            const r=await fetch('/api/check-resolutions',{method:'POST'});
+            const d=await r.json();
+            if(d.success){
+                if(d.closed>0){
+                    showToast(`Closed ${d.closed} resolved position(s)`,'success');
+                    fetchCopyTrades();
+                } else {
+                    showToast('No resolved markets found','info');
+                }
+            }
+        }catch(e){showToast('Resolution check failed','error');}
+        finally{if(btn){btn.disabled=false;btn.textContent='Check Resolutions';}}
     }
 
     // ---- Wallet Setup from Dashboard ----

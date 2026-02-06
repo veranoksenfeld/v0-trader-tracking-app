@@ -550,6 +550,165 @@ def execute_live_trade(client, trade, config):
         return False, str(e), 0
 
 
+# ============================================
+#  MARKET RESOLUTION CHECKER
+#  Checks if markets with OPEN copy trades have resolved.
+#  Uses Polymarket Gamma API to get market resolution status.
+# ============================================
+
+GAMMA_MARKETS_API = 'https://gamma-api.polymarket.com/markets'
+CLOB_MARKET_API = 'https://clob.polymarket.com/markets'
+
+def check_resolved_markets():
+    """
+    Check all OPEN copy trades and see if their markets have resolved.
+    If resolved, auto-close the position with correct PnL.
+    Works for both mock and live modes.
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, condition_id, outcome, side, price, our_size, market_title, mock
+            FROM copy_trades
+            WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''
+        ''')
+        open_trades = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+
+        if not open_trades:
+            return 0
+
+        # Group by condition_id to batch API calls
+        condition_ids = list(set(t['condition_id'] for t in open_trades))
+        closed_count = 0
+
+        for cid in condition_ids:
+            try:
+                # Query Gamma API for market status
+                resp = req.get(GAMMA_MARKETS_API, params={'condition_id': cid}, timeout=10)
+                if resp.status_code != 200:
+                    continue
+
+                markets = resp.json()
+                if not markets:
+                    continue
+
+                market = markets[0] if isinstance(markets, list) else markets
+
+                # Check if market has resolved
+                # Gamma API fields: 'closed', 'resolved', 'resolvedAt', 'resolutionSource'
+                is_closed = market.get('closed', False) or market.get('resolved', False)
+                if not is_closed:
+                    # Also check 'active' field (some markets use this)
+                    is_active = market.get('active', True)
+                    if is_active:
+                        continue
+
+                # Market is resolved - determine winning outcome
+                # 'outcomePrices' is like "[1, 0]" or "[0, 1]" for binary markets
+                outcome_prices_str = market.get('outcomePrices', '')
+                outcomes_list = market.get('outcomes', '')
+
+                # Parse outcome prices
+                resolution_prices = {}
+                try:
+                    if outcome_prices_str:
+                        if isinstance(outcome_prices_str, str):
+                            prices = json.loads(outcome_prices_str)
+                        else:
+                            prices = outcome_prices_str
+
+                        if isinstance(outcomes_list, str):
+                            outcomes_parsed = json.loads(outcomes_list)
+                        else:
+                            outcomes_parsed = outcomes_list or []
+
+                        for i, price in enumerate(prices):
+                            if i < len(outcomes_parsed):
+                                resolution_prices[outcomes_parsed[i].lower()] = float(price)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    pass
+
+                # Close all OPEN trades for this condition_id
+                trades_for_cid = [t for t in open_trades if t['condition_id'] == cid]
+                conn = get_db()
+                cursor = conn.cursor()
+
+                for trade in trades_for_cid:
+                    entry_price = float(trade.get('price') or 0)
+                    our_size = float(trade.get('our_size') or 0)
+                    trade_outcome = (trade.get('outcome') or '').lower()
+                    side = (trade.get('side') or '').upper()
+
+                    # Determine exit price from resolution
+                    # If the outcome the trade was on resolved to 1 = WIN, 0 = LOSS
+                    exit_price = resolution_prices.get(trade_outcome, None)
+
+                    if exit_price is None:
+                        # Fallback: check if any outcome settled at 1
+                        # If our outcome isn't the winner, it resolved to 0
+                        if resolution_prices:
+                            winning_outcomes = [k for k, v in resolution_prices.items() if v >= 0.99]
+                            if trade_outcome in winning_outcomes:
+                                exit_price = 1.0
+                            else:
+                                exit_price = 0.0
+                        else:
+                            # Cannot determine, skip
+                            continue
+
+                    # Calculate PnL
+                    if side == 'BUY':
+                        pnl = (exit_price - entry_price) * our_size
+                    else:
+                        pnl = (entry_price - exit_price) * our_size
+
+                    pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
+                    actual_result = 'WIN' if pnl >= 0 else 'LOSS'
+
+                    cursor.execute('''
+                        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+                        WHERE id = ?
+                    ''', (datetime.now().isoformat(), actual_result, exit_price, round(pnl, 4), round(pnl_pct, 2), trade['id']))
+
+                    mode_str = 'MOCK' if trade.get('mock') else 'LIVE'
+                    log_event('ENGINE', actual_result,
+                              f'[{mode_str}] Market resolved: {trade.get("market_title", "")[:50]}',
+                              f'Outcome: {trade.get("outcome","")} resolved @ {exit_price:.2f} | Entry: {entry_price:.2f} | PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
+                    closed_count += 1
+
+                conn.commit()
+                conn.close()
+
+                # Small delay between API calls
+                time.sleep(0.3)
+
+            except Exception as e:
+                log_event('ENGINE', 'WARN', f'Resolution check failed for {cid[:16]}', str(e))
+                continue
+
+        if closed_count > 0:
+            log_event('ENGINE', 'INFO', f'Auto-closed {closed_count} position(s) from resolved markets')
+
+        return closed_count
+
+    except Exception as e:
+        log_event('ENGINE', 'ERROR', 'Resolution checker error', str(e))
+        return 0
+
+
+def resolution_checker_loop():
+    """Background thread that periodically checks for resolved markets"""
+    log_event('ENGINE', 'INFO', 'Market resolution checker started (every 30s)')
+    while copy_engine.get('running', False):
+        try:
+            check_resolved_markets()
+        except Exception as e:
+            log_event('ENGINE', 'ERROR', 'Resolution loop error', str(e))
+        time.sleep(30)  # Check every 30 seconds
+
+
 def copy_trading_loop():
     """Main copy trading loop with tiered execution and strategy-based sizing"""
     global copy_engine
@@ -699,15 +858,24 @@ def copy_trading_loop():
                 log_event('ENGINE', 'COPY', f'[{mode_label}|{tier_label}|{strategy}] Copying {side_str} from {trader_name}',
                           f'{market_title} | ${trade_size:.2f}')
 
-                # In mock mode, if this is a SELL, try to close matching OPEN BUY positions first
-                if mock_mode and side_str == 'SELL' and trade.get('condition_id'):
+                # In mock or live mode, if this is a SELL, try to close matching OPEN BUY positions
+                if side_str == 'SELL' and trade.get('condition_id'):
                     conn_close = get_db()
                     c_close = conn_close.cursor()
-                    c_close.execute('''
-                        SELECT id, price, our_size FROM copy_trades
-                        WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
-                        ORDER BY executed_at ASC
-                    ''', (trade['condition_id'],))
+                    # Match on condition_id AND outcome for precise matching
+                    trade_outcome = trade.get('outcome', '')
+                    if trade_outcome:
+                        c_close.execute('''
+                            SELECT id, price, our_size FROM copy_trades
+                            WHERE condition_id = ? AND outcome = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
+                            ORDER BY executed_at ASC
+                        ''', (trade['condition_id'], trade_outcome))
+                    else:
+                        c_close.execute('''
+                            SELECT id, price, our_size FROM copy_trades
+                            WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
+                            ORDER BY executed_at ASC
+                        ''', (trade['condition_id'],))
                     open_positions = [dict(r) for r in c_close.fetchall()]
                     if open_positions:
                         sell_price = float(trade.get('price') or 0)
@@ -725,8 +893,8 @@ def copy_trading_loop():
                                       f'Entry: {entry_price:.2f} Exit: {sell_price:.2f} PnL: ${pnl:.2f}')
                         conn_close.commit()
                         conn_close.close()
-                        # Advance timestamp and continue (don't open a new SELL copy trade in mock)
-                        ts_key = 'last_mock_processed_timestamp'
+                        # Advance timestamp and continue (don't open a new SELL copy trade)
+                        ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
@@ -790,6 +958,9 @@ def start_copy_engine():
     copy_engine['running'] = True
     copy_engine['thread'] = threading.Thread(target=copy_trading_loop, daemon=True)
     copy_engine['thread'].start()
+    # Start market resolution checker in a separate thread
+    resolution_thread = threading.Thread(target=resolution_checker_loop, daemon=True)
+    resolution_thread.start()
 
 
 def stop_copy_engine():
@@ -1145,6 +1316,13 @@ def close_copy_trade(trade_id):
     log_event('ENGINE', actual_result, f'Trade closed: {td.get("market_title", "")[:50]}', f'PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
     return jsonify({'success': True, 'pnl': round(pnl, 4), 'result': actual_result})
 
+
+
+@app.route('/api/check-resolutions', methods=['POST'])
+def trigger_resolution_check():
+    """Manually trigger market resolution check"""
+    closed = check_resolved_markets()
+    return jsonify({'success': True, 'closed': closed})
 
 
 @app.route('/api/market-cache/stats', methods=['GET'])
