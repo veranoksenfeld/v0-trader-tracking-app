@@ -652,6 +652,23 @@ def copy_trading_loop():
                 side_str = (trade.get('side') or '').upper()
                 token_id = trade.get('asset') or trade.get('condition_id') or ''
 
+                # Check max trades per event limit
+                max_per_event = config.get('max_trades_per_event', 0)
+                if max_per_event > 0 and trade.get('condition_id'):
+                    conn2 = get_db()
+                    c2 = conn2.cursor()
+                    c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
+                               (trade['condition_id'],))
+                    event_open = c2.fetchone()['c']
+                    conn2.close()
+                    if event_open >= max_per_event:
+                        log_event('ENGINE', 'SKIP', f'Max open trades per event reached ({event_open}/{max_per_event})',
+                                  f'{trade.get("title", "")[:50]}')
+                        ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                        config[ts_key] = trade['timestamp']
+                        save_config(config)
+                        continue
+
                 # In mock mode, allow smaller trades for testing
                 effective_min = 0.01 if mock_mode else min_size
 
@@ -681,6 +698,39 @@ def copy_trading_loop():
 
                 log_event('ENGINE', 'COPY', f'[{mode_label}|{tier_label}|{strategy}] Copying {side_str} from {trader_name}',
                           f'{market_title} | ${trade_size:.2f}')
+
+                # In mock mode, if this is a SELL, try to close matching OPEN BUY positions first
+                if mock_mode and side_str == 'SELL' and trade.get('condition_id'):
+                    conn_close = get_db()
+                    c_close = conn_close.cursor()
+                    c_close.execute('''
+                        SELECT id, price, our_size FROM copy_trades
+                        WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
+                        ORDER BY executed_at ASC
+                    ''', (trade['condition_id'],))
+                    open_positions = [dict(r) for r in c_close.fetchall()]
+                    if open_positions:
+                        sell_price = float(trade.get('price') or 0)
+                        for op in open_positions:
+                            entry_price = float(op.get('price') or 0)
+                            op_size = float(op.get('our_size') or 0)
+                            pnl = (sell_price - entry_price) * op_size
+                            pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
+                            actual_result = 'WIN' if pnl >= 0 else 'LOSS'
+                            c_close.execute('''
+                                UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+                                WHERE id = ?
+                            ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
+                            log_event('ENGINE', actual_result, f'[MOCK] Auto-closed position: {market_title[:50]}',
+                                      f'Entry: {entry_price:.2f} Exit: {sell_price:.2f} PnL: ${pnl:.2f}')
+                        conn_close.commit()
+                        conn_close.close()
+                        # Advance timestamp and continue (don't open a new SELL copy trade in mock)
+                        ts_key = 'last_mock_processed_timestamp'
+                        config[ts_key] = trade['timestamp']
+                        save_config(config)
+                        continue
+                    conn_close.close()
 
                 if mock_mode:
                     success, response, our_size = execute_mock_trade(trade, config)
@@ -927,6 +977,7 @@ def get_config():
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
         'max_trades': config.get('max_trades', 0),
+        'max_trades_per_event': config.get('max_trades_per_event', 0),
     }
     return jsonify(safe)
 
@@ -960,6 +1011,9 @@ def update_config():
         config['prob_sizing_enabled'] = bool(data['prob_sizing_enabled'])
     if 'max_trades' in data:
         config['max_trades'] = max(0, int(data['max_trades']))
+    if 'max_trades_per_event' in data:
+        config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
+        log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
     save_config(config)
     return jsonify({'success': True})
 
