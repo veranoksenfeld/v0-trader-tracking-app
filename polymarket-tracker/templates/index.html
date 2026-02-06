@@ -614,7 +614,7 @@
         // Track which events we've rendered to show "+" badge
         const eventSeen={};
 
-        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
+        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Ends In</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
             const link=polyLink(t.market_slug,t.event_slug);
             const resultCls=t.result==='WIN'?'result-win':t.result==='LOSS'?'result-loss':'result-open';
             const pnlCls=t.pnl>0?'pnl-positive':t.pnl<0?'pnl-negative':'';
@@ -629,6 +629,16 @@
             const statusHtml=isClosed
                 ?'<span style="color:var(--text-dim);font-size:11px;font-weight:500;">Closed</span>'
                 :'<span style="color:var(--green);font-size:11px;font-weight:600;">Active</span>';
+
+            // Countdown timer for event end
+            let timerHtml='<span style="color:var(--text-dim);font-size:11px;">--</span>';
+            if(t.end_date){
+                if(isClosed){
+                    timerHtml='<span style="color:var(--text-dim);font-size:11px;">Ended</span>';
+                } else {
+                    timerHtml=`<span class="event-timer" data-end="${t.end_date}" style="font-size:11px;font-weight:600;font-family:monospace;white-space:nowrap;"></span>`;
+                }
+            }
 
             // Action column - hidden in mock mode
             let actionTd='';
@@ -648,9 +658,41 @@
                 }
             }
 
-            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:250px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}${t.outcome?'<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">'+t.outcome+' '+tierBadge+'</div>':' '+tierBadge}</td><td><span class="side-${(t.side||'').toLowerCase()}">${sideStr}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
+            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:250px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}${t.outcome?'<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">'+t.outcome+' '+tierBadge+'</div>':' '+tierBadge}</td><td><span class="side-${(t.side||'').toLowerCase()}">${sideStr}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
         }).join('')}</tbody></table>`;
+        updateEventTimers();
     }
+    // ---- Event Countdown Timers ----
+    function updateEventTimers(){
+        document.querySelectorAll('.event-timer').forEach(el=>{
+            const end=el.dataset.end;
+            if(!end)return;
+            const endMs=new Date(end).getTime();
+            const now=Date.now();
+            const diff=endMs-now;
+            if(diff<=0){
+                el.textContent='Ended';
+                el.style.color='var(--red)';
+                return;
+            }
+            const d=Math.floor(diff/86400000);
+            const h=Math.floor((diff%86400000)/3600000);
+            const m=Math.floor((diff%3600000)/60000);
+            const s=Math.floor((diff%60000)/1000);
+            let str='';
+            if(d>0)str=d+'d '+h+'h '+m+'m';
+            else if(h>0)str=h+'h '+m+'m '+s+'s';
+            else str=m+'m '+s+'s';
+            // Color based on urgency
+            if(diff<300000)el.style.color='var(--red)';        // <5min red
+            else if(diff<900000)el.style.color='var(--orange)'; // <15min orange
+            else if(diff<3600000)el.style.color='var(--yellow)'; // <1hr yellow
+            else el.style.color='var(--cyan)';
+            el.textContent=str;
+        });
+    }
+    setInterval(updateEventTimers, 1000);
+
     async function closeTrade(id, isWin) {
         const price = isWin ? 1 : 0;
         try{const r=await fetch('/api/copy-trades/'+id+'/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({result:isWin?'WIN':'LOSS',current_price:price})}); const res=await r.json(); if(r.ok){showToast(`Trade closed as ${isWin?'WIN':'LOSS'}: $${res.pnl?.toFixed(2)||'0'} PnL`,isWin?'success':'error');fetchCopyTrades();}else showToast(res.error||'Error','error');}catch(e){showToast('Error closing trade','error');}

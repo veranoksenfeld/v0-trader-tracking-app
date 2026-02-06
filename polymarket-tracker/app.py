@@ -283,6 +283,12 @@ def init_db():
     except Exception:
         pass  # Column already exists
 
+    # Add end_date column to copy_trades if missing
+    try:
+        cursor.execute("ALTER TABLE copy_trades ADD COLUMN end_date TEXT")
+    except Exception:
+        pass  # Column already exists
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS copy_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,6 +309,7 @@ def init_db():
             pnl_pct REAL DEFAULT 0,
             closed INTEGER DEFAULT 0,
             closed_at TEXT,
+            end_date TEXT,
             result TEXT DEFAULT 'OPEN',
             status TEXT,
             mock INTEGER DEFAULT 0,
@@ -564,6 +571,31 @@ def execute_live_trade(client, trade, config):
 # ============================================
 
 GAMMA_MARKETS_API = 'https://gamma-api.polymarket.com/markets'
+
+# Cache for market end dates to avoid repeated API calls
+_market_end_date_cache = {}
+
+def get_market_end_date(condition_id):
+    """Fetch the end date for a market from the Gamma API. Returns ISO string or None."""
+    if not condition_id:
+        return None
+    if condition_id in _market_end_date_cache:
+        return _market_end_date_cache[condition_id]
+    try:
+        resp = req.get(GAMMA_MARKETS_API, params={'condition_ids': condition_id, 'limit': 1}, timeout=8)
+        if resp.status_code == 200:
+            markets = resp.json()
+            if markets and isinstance(markets, list) and len(markets) > 0:
+                market = markets[0]
+                # Prefer endDateIso, fallback to endDate
+                end_date = market.get('endDateIso') or market.get('endDate') or None
+                _market_end_date_cache[condition_id] = end_date
+                return end_date
+    except Exception as e:
+        log_event('ENGINE', 'WARN', f'Failed to fetch end date for {condition_id[:24]}', str(e))
+    _market_end_date_cache[condition_id] = None
+    return None
+
 
 def check_resolved_markets():
     """
@@ -998,22 +1030,26 @@ def copy_trading_loop():
                 else:
                     success, response, our_size = execute_live_trade(client, trade, config)
 
+                # Fetch market end date from Gamma API
+                cid = trade.get('condition_id', '')
+                end_date = get_market_end_date(cid) if cid else None
+
                 # Record in DB with market metadata
                 conn = get_db()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, executed_at, response)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, executed_at, response, end_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     trade['id'], trader_name, market_title,
                     trade.get('slug', ''), trade.get('event_slug', ''),
-                    trade.get('condition_id', ''), trade.get('icon', ''),
+                    cid, trade.get('icon', ''),
                     trade.get('outcome', ''), side_str,
                     trade_size, our_size, trade.get('price', 0),
                     'SUCCESS' if success else 'FAILED',
                     1 if mock_mode else 0,
                     'OPEN' if side_str == 'BUY' else 'CLOSED',
-                    datetime.now().isoformat(), response
+                    datetime.now().isoformat(), response, end_date
                 ))
                 conn.commit()
                 conn.close()
