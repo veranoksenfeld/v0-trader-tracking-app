@@ -87,6 +87,8 @@
         .toggle.active::after { transform:translateX(22px); }
         .toggle-row.mock-row { background:linear-gradient(135deg,#431407,#7c2d12); }
         .toggle-row.mock-row .info p { color:#fdba74; }
+        .toggle-row.risk-row { background:linear-gradient(135deg,#0c4a6e,#164e63); }
+        .toggle-row.risk-row .info p { color:#67e8f9; }
         .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:10px; margin-bottom:16px; }
         .stat-card { background:var(--bg-input); border-radius:8px; padding:12px; text-align:center; }
         .stat-card .val { font-size:18px; font-weight:700; }
@@ -166,10 +168,23 @@
         .winrate-ring { width:52px; height:52px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:14px; font-weight:700; flex-shrink:0; }
         .market-link { display:inline-flex; align-items:center; gap:3px; font-size:11px; color:var(--accent); background:rgba(99,102,241,0.08); padding:2px 8px; border-radius:4px; }
         .market-link:hover { background:rgba(99,102,241,0.15); }
-        .pnl-summary { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:16px; }
+        .pnl-summary { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:16px; }
         .pnl-card { background:var(--bg-input); border-radius:8px; padding:14px; text-align:center; }
         .pnl-card .val { font-size:22px; font-weight:700; }
         .pnl-card .lbl { font-size:10px; color:var(--text-dim); text-transform:uppercase; letter-spacing:.3px; margin-top:2px; }
+        .strategy-select { padding:6px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:12px; cursor:pointer; outline:none; }
+        .strategy-select:focus { border-color:var(--accent); }
+        .config-input { padding:6px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:12px; width:70px; text-align:right; outline:none; }
+        .config-input:focus { border-color:var(--accent); }
+        .risk-panel { background:linear-gradient(135deg,#0f172a,#1e293b); border:1px solid #334155; border-radius:12px; padding:16px; margin-bottom:16px; }
+        .risk-panel h3 { color:var(--cyan); margin-bottom:12px; font-size:13px; letter-spacing:.5px; }
+        .risk-stat { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; background:rgba(6,182,212,0.1); border:1px solid rgba(6,182,212,0.2); border-radius:5px; font-size:11px; color:var(--cyan); margin-right:6px; margin-bottom:6px; }
+        .tier-badge { display:inline-block; padding:2px 6px; border-radius:3px; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; }
+        .tier-WHALE { background:rgba(168,85,247,0.15); color:#c084fc; }
+        .tier-LARGE { background:rgba(59,130,246,0.15); color:#60a5fa; }
+        .tier-MEDIUM { background:rgba(34,197,94,0.15); color:#4ade80; }
+        .tier-SMALL { background:rgba(161,161,170,0.1); color:#a1a1aa; }
+        .tier-SELL { background:var(--red-dim); color:var(--red); }
         ::-webkit-scrollbar { width:6px; } ::-webkit-scrollbar-track { background:transparent; } ::-webkit-scrollbar-thumb { background:#27272a; border-radius:3px; }
         @media (max-width:900px) { .panels{flex-direction:column;} .panel-left{width:100%;min-width:100%;border-right:none;border-bottom:1px solid var(--border);max-height:250px;} .grid-2,.grid-3{grid-template-columns:1fr;} .pnl-summary{grid-template-columns:repeat(3,1fr);} .topbar-nav{display:none;} }
     </style>
@@ -210,6 +225,21 @@
                     <div class="pnl-card"><div class="val" style="color:var(--yellow);" id="pnl-open">0</div><div class="lbl">Open</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-total">$0.00</div><div class="lbl">Total PnL</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-winrate">0%</div><div class="lbl">Win Rate</div></div>
+                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-blocked">0</div><div class="lbl">Blocked</div></div>
+                </div>
+
+                <!-- Risk Guard Panel -->
+                <div class="risk-panel" id="risk-panel">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+                        <h3 style="margin-bottom:0;">RISK GUARD / CIRCUIT BREAKER</h3>
+                        <button class="btn btn-sm btn-outline" style="font-size:10px;color:var(--cyan);border-color:rgba(6,182,212,0.3);" onclick="resetRiskGuard()">Reset Trips</button>
+                    </div>
+                    <div id="risk-stats">
+                        <span class="risk-stat">Allowed: <strong id="rg-allowed">0</strong></span>
+                        <span class="risk-stat">Blocked: <strong id="rg-blocked">0</strong></span>
+                        <span class="risk-stat">Tripped: <strong id="rg-tripped">0</strong></span>
+                    </div>
+                    <div id="tripped-tokens" style="margin-top:8px;"></div>
                 </div>
 
                 <div class="grid-2">
@@ -217,12 +247,26 @@
                     <div class="card">
                         <h3>Copy Trading Engine</h3>
                         <div class="toggle-row mock-row" style="margin-bottom:10px;"><div class="info"><h4>Mock Mode</h4><p>Simulate trades without real money</p></div><div class="toggle" id="mock-toggle" onclick="toggleMock()"></div></div>
+                        <div class="toggle-row risk-row" style="margin-bottom:10px;"><div class="info"><h4>Risk Guard</h4><p>Circuit breaker + position limits</p></div><div class="toggle active" id="rg-toggle" onclick="toggleRiskGuard()"></div></div>
                         <div class="status-row"><span class="label">Engine</span><span class="value" id="engine-status-text"><span class="dot on"></span>Auto-running</span></div>
                         <div class="status-row"><span class="label">Mode</span><span class="value" id="mode-display" style="color:var(--green);">LIVE</span></div>
+                        <div class="status-row">
+                            <span class="label">Strategy</span>
+                            <span class="value">
+                                <select class="strategy-select" id="strategy-select" onchange="updateStrategy()">
+                                    <option value="PERCENTAGE">Percentage</option>
+                                    <option value="FIXED">Fixed Size</option>
+                                    <option value="ADAPTIVE">Adaptive (Tiered)</option>
+                                </select>
+                            </span>
+                        </div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
-                        <div class="status-row"><span class="label">Copy %</span><span class="value" id="copy-pct-display">10%</span></div>
-                        <div class="status-row"><span class="label">Max Trade</span><span class="value" id="copy-max-display">$100</span></div>
+                        <div class="status-row"><span class="label">Blocked (Risk)</span><span class="value" style="color:var(--cyan);" id="engine-blocked">0</span></div>
+                        <div class="status-row"><span class="label">Copy %</span><span class="value"><input class="config-input" id="copy-pct-input" type="number" min="1" max="100" value="10" onchange="updateCopyPct()"><span style="color:var(--text-dim);font-size:11px;">%</span></span></div>
+                        <div class="status-row"><span class="label">Max Trade</span><span class="value">$<input class="config-input" id="copy-max-input" type="number" min="1" value="100" onchange="updateMaxTrade()"></span></div>
+                        <div class="status-row"><span class="label">Max Open</span><span class="value"><input class="config-input" id="max-open-input" type="number" min="1" max="50" value="10" onchange="updateMaxOpen()"></span></div>
+                        <div class="status-row"><span class="label">Prob Sizing</span><span class="value"><div class="toggle" id="prob-toggle" onclick="toggleProbSizing()" style="width:36px;height:20px;"></div></span></div>
                         <div class="status-row"><span class="label">Last Check</span><span class="value" style="font-size:11px;color:var(--text-dim);" id="last-check">--</span></div>
                     </div>
                 </div>
@@ -316,6 +360,7 @@
     function showToast(msg,type='info') { const t=document.getElementById('toast'); t.textContent=msg; t.className='toast '+type+' show'; setTimeout(()=>t.classList.remove('show'),3500); }
     function wrColor(wr) { if(wr>=60)return'var(--green)'; if(wr>=45)return'var(--yellow)'; return'var(--red)'; }
     function polyLink(slug,event_slug) { if(event_slug)return'https://polymarket.com/event/'+event_slug; if(slug)return'https://polymarket.com/event/'+slug; return'https://polymarket.com'; }
+    function tierClass(size) { if(size>=2000)return'WHALE'; if(size>=500)return'LARGE'; if(size>=100)return'MEDIUM'; return'SMALL'; }
     function switchPage(p) { document.querySelectorAll('.topbar-nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===p)); document.querySelectorAll('.page').forEach(el=>el.classList.toggle('active',el.id==='page-'+p)); if(p==='log')fetchLog(); }
 
     // ---- Traders ----
@@ -379,6 +424,34 @@
         const current=!!config.mock_mode, next=!current;
         try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mock_mode:next})}); if(r.ok){config.mock_mode=next;document.getElementById('mock-toggle').classList.toggle('active',next);updateMockUI();showToast(next?'Mock mode ON':'Mock mode OFF - LIVE!',next?'info':'success');setTimeout(loadConfig,500);}}catch(e){showToast('Error','error');}
     }
+    async function toggleRiskGuard() {
+        const next=!config.risk_guard_enabled;
+        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({risk_guard_enabled:next})}); if(r.ok){config.risk_guard_enabled=next;document.getElementById('rg-toggle').classList.toggle('active',next);showToast(next?'Risk Guard ON':'Risk Guard OFF','info');}}catch(e){}
+    }
+    async function toggleProbSizing() {
+        const next=!config.prob_sizing_enabled;
+        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prob_sizing_enabled:next})}); if(r.ok){config.prob_sizing_enabled=next;document.getElementById('prob-toggle').classList.toggle('active',next);showToast(next?'Probability sizing ON':'Probability sizing OFF','info');}}catch(e){}
+    }
+    async function updateStrategy() {
+        const v=document.getElementById('strategy-select').value;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_strategy:v})});config.copy_strategy=v;showToast('Strategy: '+v,'success');}catch(e){}
+    }
+    async function updateCopyPct() {
+        const v=parseInt(document.getElementById('copy-pct-input').value)||10;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_percentage:v})});showToast('Copy % updated','success');}catch(e){}
+    }
+    async function updateMaxTrade() {
+        const v=parseFloat(document.getElementById('copy-max-input').value)||100;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trade_size:v})});showToast('Max trade updated','success');}catch(e){}
+    }
+    async function updateMaxOpen() {
+        const v=parseInt(document.getElementById('max-open-input').value)||10;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_open_positions:v})});showToast('Max open positions updated','success');}catch(e){}
+    }
+    async function resetRiskGuard() {
+        try{await fetch('/api/risk-guard/reset',{method:'POST'});showToast('Risk guard reset','success');fetchRiskGuard();}catch(e){}
+    }
+
     function updateStatus() {
         const el=document.getElementById('engine-status-text'), badge=document.getElementById('engine-badge'), dot=document.getElementById('engine-dot'), label=document.getElementById('engine-label');
         if(config.engine_running){if(config.has_credentials||config.mock_mode){el.innerHTML='<span class="dot on"></span>Running'+(config.mock_mode?' (Mock)':'');badge.classList.remove('off');badge.classList.add('on');dot.style.background='var(--green)';label.textContent='Engine Running';}else{el.innerHTML='<span class="dot warn"></span>Waiting for wallet';dot.style.background='var(--yellow)';label.textContent='Waiting';}}else{el.innerHTML='<span class="dot off"></span>Stopped';badge.classList.remove('on');badge.classList.add('off');dot.style.background='var(--red)';label.textContent='Engine Off';}
@@ -392,11 +465,16 @@
     // ---- Config ----
     async function loadConfig() {
         try{const r=await fetch('/api/config'); config=await r.json();
-        document.getElementById('copy-pct-display').textContent=(config.copy_percentage||10)+'%';
-        document.getElementById('copy-max-display').textContent='$'+(config.max_trade_size||100);
+        document.getElementById('copy-pct-input').value=config.copy_percentage||10;
+        document.getElementById('copy-max-input').value=config.max_trade_size||100;
+        document.getElementById('max-open-input').value=config.max_open_positions||10;
         document.getElementById('engine-copied').textContent=(config.trades_copied||0).toLocaleString();
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
+        document.getElementById('engine-blocked').textContent=(config.trades_blocked||0).toLocaleString();
         document.getElementById('last-check').textContent=config.last_check?new Date(config.last_check).toLocaleTimeString():'--';
+        document.getElementById('strategy-select').value=config.copy_strategy||'PERCENTAGE';
+        document.getElementById('rg-toggle').classList.toggle('active',config.risk_guard_enabled!==false);
+        document.getElementById('prob-toggle').classList.toggle('active',!!config.prob_sizing_enabled);
         updateStatus();updateMockUI();renderWallet();}catch(e){}
     }
     function renderWallet() {
@@ -415,6 +493,14 @@
         }
     }
 
+    // ---- Risk Guard ----
+    async function fetchRiskGuard() {
+        try{const r=await fetch('/api/risk-guard'); const d=await r.json();
+        if(d.stats){document.getElementById('rg-allowed').textContent=d.stats.allowed||0;document.getElementById('rg-blocked').textContent=d.stats.blocked||0;document.getElementById('rg-tripped').textContent=d.stats.tripped||0;}
+        const el=document.getElementById('tripped-tokens');
+        if(d.tripped_tokens&&d.tripped_tokens.length){el.innerHTML='<div style="font-size:11px;color:var(--red);margin-top:4px;">Tripped: '+d.tripped_tokens.map(t=>`<span class="risk-stat" style="color:var(--red);background:rgba(239,68,68,0.1);border-color:rgba(239,68,68,0.2);">${t.token} (${t.secs_left}s left)</span>`).join('')+'</div>';}else{el.innerHTML='';}}catch(e){}
+    }
+
     // ---- Stats & Trades ----
     async function fetchStats() { try{await fetch('/api/stats');}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
@@ -428,7 +514,8 @@
             const av=t.profile_image?`<img src="${t.profile_image}" onerror="this.parentElement.innerHTML='${init}'">`  :init;
             const mi=t.icon?`<img src="${t.icon}" onerror="this.style.display='none'">`  :'';
             const link=polyLink(t.slug,t.event_slug);
-            return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome">${t.outcome||''}</div></div></div></td><td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
+            const tier=tierClass(parseFloat(t.usdc_size||0));
+            return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome">${t.outcome||''} <span class="tier-badge tier-${tier}">${tier}</span></div></div></div></td><td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
         }).join('');
     }
 
@@ -448,8 +535,11 @@
             const pnlCls=t.pnl>0?'pnl-positive':t.pnl<0?'pnl-negative':'';
             const pnlStr=t.pnl?((t.pnl>=0?'+':'')+parseFloat(t.pnl).toFixed(2)):'--';
             const iconHtml=t.icon?`<img src="${t.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
-            const closeBtn=t.result==='OPEN'&&t.status==='SUCCESS'?`<button class="btn btn-sm btn-success" style="padding:3px 8px;font-size:10px;margin-right:3px;" onclick="closeTrade(${t.id},1)">W</button><button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:10px;" onclick="closeTrade(${t.id},0)">L</button>`:(t.result!=='OPEN'?`<span style="font-size:10px;color:var(--text-dim);">${t.closed_at?new Date(t.closed_at).toLocaleDateString():''}</span>`:'');
-            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${t.outcome?'<span style="font-size:10px;color:var(--text-dim);margin-left:4px;">'+t.outcome+'</span>':''}</td><td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td><td>${closeBtn}</td></tr>`;
+            const tier=tierClass(parseFloat(t.original_size||0));
+            const sideStr=(t.side||'').toUpperCase();
+            const tierBadge=sideStr==='SELL'?'<span class="tier-badge tier-SELL">SELL</span>':`<span class="tier-badge tier-${tier}">${tier}</span>`;
+            const closeBtn=t.result==='OPEN'&&t.status==='SUCCESS'?`<button class="btn btn-sm btn-success" style="padding:3px 8px;font-size:10px;margin-right:3px;" onclick="closeTrade(${t.id},1)" title="Mark as Win">W</button><button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:10px;" onclick="closeTrade(${t.id},0)" title="Mark as Loss">L</button>`:(t.result!=='OPEN'?`<span style="font-size:10px;color:var(--text-dim);">${t.closed_at?new Date(t.closed_at).toLocaleDateString():''}</span>`:'');
+            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${t.outcome?'<span style="font-size:10px;color:var(--text-dim);margin-left:4px;">'+t.outcome+'</span>':''} ${tierBadge}</td><td><span class="side-${(t.side||'').toLowerCase()}">${sideStr}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td><td>${closeBtn}</td></tr>`;
         }).join('')}</tbody></table>`;
     }
     async function closeTrade(id, isWin) {
@@ -466,6 +556,7 @@
         document.getElementById('pnl-total').style.color=tp>=0?'var(--green)':'var(--red)';
         document.getElementById('pnl-winrate').textContent=(s.win_rate||0)+'%';
         document.getElementById('pnl-winrate').style.color=wrColor(s.win_rate||0);
+        document.getElementById('pnl-blocked').textContent=config.trades_blocked||0;
         }catch(e){}
     }
 
@@ -505,9 +596,10 @@
     }
 
     // ---- Init ----
-    fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();
+    fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();fetchRiskGuard();
     connectSSE();
     setInterval(loadConfig,30000);
+    setInterval(fetchRiskGuard,15000);
 </script>
 </body>
 </html>
