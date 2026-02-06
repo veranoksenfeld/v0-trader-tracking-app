@@ -4,7 +4,6 @@ Integrated copy trading engine with MOCK MODE for testing.
 Unified log system for app.py, fetcher.py, copy_trader.py.
 """
 from flask import Flask, render_template, jsonify, request, Response
-import sqlite3
 from datetime import datetime
 import os
 import json
@@ -12,6 +11,8 @@ import time
 import threading
 import random
 import requests as req
+
+from db import get_db, get_conn, get_write_conn, db_write, DATABASE
 
 # Import fetcher functions
 try:
@@ -21,11 +22,7 @@ except ImportError:
     FETCHER_AVAILABLE = False
 
 app = Flask(__name__)
-DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
-
-# ---- Serialised DB write lock (prevents "database is locked") ----
-_db_write_lock = threading.Lock()
 
 # ---- Copy Trading Engine State ----
 copy_engine = {
@@ -237,36 +234,17 @@ def save_config(config):
         json.dump(config, f, indent=2)
 
 
-def get_db():
-    conn = sqlite3.connect(DATABASE, timeout=60, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA busy_timeout=60000')
-    conn.execute('PRAGMA synchronous=NORMAL')
-    return conn
-
-
-def db_write(fn):
-    """Execute a write operation under the global write lock to prevent 'database is locked'."""
-    with _db_write_lock:
-        return fn()
+## get_db, get_conn, get_write_conn, db_write imported from db.py
 
 
 def log_event(source, level, message, details=''):
     """Unified log: source is 'APP', 'ENGINE', 'FETCHER', or 'TRADER'"""
     try:
-        def _write():
-            conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute(
-                    'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
-                    (datetime.now().isoformat(), source, level, message, details)
-                )
-                conn.commit()
-            finally:
-                conn.close()
-        db_write(_write)
+        with get_write_conn() as conn:
+            conn.execute(
+                'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+                (datetime.now().isoformat(), source, level, message, details)
+            )
     except Exception:
         pass
 
@@ -430,7 +408,7 @@ def flush_aggregation_buffers():
 
 # ---- Database Init ----
 def init_db():
-    conn = get_db()
+    conn = get_db()  # Long-running init -- closed explicitly at end of function
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -587,22 +565,20 @@ def calculate_win_rate(trader_id):
     A trade is a 'win' if the sell price > average buy price for same market.
     Also counts: if bought at < 50c and outcome was correct (sell > buy).
     """
-    conn = get_db()
-    cursor = conn.cursor()
-
-    # Get all trades grouped by market (title + outcome)
-    cursor.execute('''
-        SELECT title, outcome, side, price, usdc_size
-        FROM trades WHERE trader_id = ? AND price IS NOT NULL
-        ORDER BY timestamp ASC
-    ''', (trader_id,))
-    trades = [dict(r) for r in cursor.fetchall()]
+    # Read trades with a short-lived connection
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT title, outcome, side, price, usdc_size
+            FROM trades WHERE trader_id = ? AND price IS NOT NULL
+            ORDER BY timestamp ASC
+        ''', (trader_id,))
+        trades = [dict(r) for r in cursor.fetchall()]
 
     if not trades:
-        conn.close()
         return 0.0
 
-    # Group by market
+    # Group by market (pure computation, no DB)
     markets = {}
     for t in trades:
         key = (t['title'] or '') + '|' + (t['outcome'] or '')
@@ -628,36 +604,31 @@ def calculate_win_rate(trader_id):
             if avg_sell > avg_buy:
                 wins += 1
         elif avg_buy <= 0.3:
-            # Still holding a cheap position, count as pending (skip)
             pass
         elif avg_buy >= 0.85:
-            # Bought near certainty, likely a win
             total_resolved += 1
             wins += 1
 
     win_rate = (wins / total_resolved * 100) if total_resolved > 0 else 0
 
-    # Update in DB
-    cursor.execute('UPDATE traders SET win_rate = ? WHERE id = ?', (round(win_rate, 1), trader_id))
+    # Write stats with short-lived write connection
+    with get_write_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute('UPDATE traders SET win_rate = ? WHERE id = ?', (round(win_rate, 1), trader_id))
+        cursor.execute('SELECT COUNT(*) as c, SUM(usdc_size) as v FROM trades WHERE trader_id = ?', (trader_id,))
+        row = cursor.fetchone()
+        cursor.execute('UPDATE traders SET total_trades = ?, volume_traded = ? WHERE id = ?',
+                       (row['c'] or 0, round(row['v'] or 0, 2), trader_id))
 
-    # Also update total_trades and volume
-    cursor.execute('SELECT COUNT(*) as c, SUM(usdc_size) as v FROM trades WHERE trader_id = ?', (trader_id,))
-    row = cursor.fetchone()
-    cursor.execute('UPDATE traders SET total_trades = ?, volume_traded = ? WHERE id = ?',
-                   (row['c'] or 0, round(row['v'] or 0, 2), trader_id))
-
-    conn.commit()
-    conn.close()
     return round(win_rate, 1)
 
 
 def refresh_all_win_rates():
     """Recalculate win rates for all traders"""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT id FROM traders')
-    ids = [r['id'] for r in cursor.fetchall()]
-    conn.close()
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM traders')
+        ids = [r['id'] for r in cursor.fetchall()]
     for tid in ids:
         calculate_win_rate(tid)
 
@@ -805,35 +776,33 @@ def copy_trading_loop():
                     save_config(config)
                     log_event('ENGINE', 'INFO', 'Starting live copy from NOW (only new trades)')
 
-            conn = get_db()
-            cursor = conn.cursor()
+            with get_conn() as conn:
+                cursor = conn.cursor()
 
-            # In mock mode, check if any copy-enabled traders exist; if not, use ALL traders
-            cursor.execute('SELECT COUNT(*) as c FROM traders WHERE copy_trading_enabled = 1')
-            copy_enabled_count = cursor.fetchone()['c']
+                # In mock mode, check if any copy-enabled traders exist; if not, use ALL traders
+                cursor.execute('SELECT COUNT(*) as c FROM traders WHERE copy_trading_enabled = 1')
+                copy_enabled_count = cursor.fetchone()['c']
 
-            if copy_enabled_count > 0:
-                cursor.execute('''
-                    SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
-                    FROM trades t
-                    JOIN traders tr ON t.trader_id = tr.id
-                    WHERE tr.copy_trading_enabled = 1 AND t.timestamp > ?
-                    ORDER BY t.timestamp ASC LIMIT 20
-                ''', (last_processed,))
-            elif mock_mode:
-                cursor.execute('''
-                    SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
-                    FROM trades t
-                    JOIN traders tr ON t.trader_id = tr.id
-                    WHERE t.timestamp > ?
-                    ORDER BY t.timestamp ASC LIMIT 20
-                ''', (last_processed,))
-            else:
-                cursor.execute('SELECT 1 WHERE 0')
+                if copy_enabled_count > 0:
+                    cursor.execute('''
+                        SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
+                        FROM trades t
+                        JOIN traders tr ON t.trader_id = tr.id
+                        WHERE tr.copy_trading_enabled = 1 AND t.timestamp > ?
+                        ORDER BY t.timestamp ASC LIMIT 20
+                    ''', (last_processed,))
+                elif mock_mode:
+                    cursor.execute('''
+                        SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym
+                        FROM trades t
+                        JOIN traders tr ON t.trader_id = tr.id
+                        WHERE t.timestamp > ?
+                        ORDER BY t.timestamp ASC LIMIT 20
+                    ''', (last_processed,))
+                else:
+                    cursor.execute('SELECT 1 WHERE 0')
 
-            new_trades = [dict(row) for row in cursor.fetchall()]
-
-            conn.close()
+                new_trades = [dict(row) for row in cursor.fetchall()]
 
             copy_engine['last_check'] = datetime.now().isoformat()
 
@@ -868,12 +837,11 @@ def copy_trading_loop():
                 # Check max trades per event limit (counts ALL copy trades for this condition_id)
                 max_per_event = config.get('max_trades_per_event', 0)
                 if max_per_event > 0 and trade.get('condition_id'):
-                    conn2 = get_db()
-                    c2 = conn2.cursor()
-                    c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND side = 'BUY' AND status = 'SUCCESS'",
-                               (trade['condition_id'],))
-                    event_count = c2.fetchone()['c']
-                    conn2.close()
+                    with get_conn() as conn2:
+                        c2 = conn2.cursor()
+                        c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND side = 'BUY' AND status = 'SUCCESS'",
+                                   (trade['condition_id'],))
+                        event_count = c2.fetchone()['c']
                     if event_count >= max_per_event:
                         log_event('ENGINE', 'SKIP', f'Max trades in event reached ({event_count}/{max_per_event})',
                                   f'{trade.get("title", "")[:50]}')
@@ -929,36 +897,36 @@ def copy_trading_loop():
 
                 # In mock mode, if this is a SELL, try to close matching OPEN BUY positions first
                 if mock_mode and side_str == 'SELL' and trade.get('condition_id'):
-                    conn_close = get_db()
-                    c_close = conn_close.cursor()
-                    c_close.execute('''
-                        SELECT id, price, our_size FROM copy_trades
-                        WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
-                        ORDER BY executed_at ASC
-                    ''', (trade['condition_id'],))
-                    open_positions = [dict(r) for r in c_close.fetchall()]
-                    if open_positions:
-                        sell_price = float(trade.get('price') or 0)
-                        for op in open_positions:
-                            entry_price = float(op.get('price') or 0)
-                            op_size = float(op.get('our_size') or 0)
-                            pnl = (sell_price - entry_price) * op_size
-                            pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
-                            actual_result = 'WIN' if pnl >= 0 else 'LOSS'
-                            c_close.execute('''
-                                UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
-                                WHERE id = ?
-                            ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
-                            log_event('ENGINE', actual_result, f'[MOCK] Auto-closed position: {market_title[:50]}',
-                                      f'Entry: {entry_price:.2f} Exit: {sell_price:.2f} PnL: ${pnl:.2f}')
-                        conn_close.commit()
-                        conn_close.close()
+                    _should_skip_sell = False
+                    with get_write_conn() as conn_close:
+                        c_close = conn_close.cursor()
+                        c_close.execute('''
+                            SELECT id, price, our_size FROM copy_trades
+                            WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
+                            ORDER BY executed_at ASC
+                        ''', (trade['condition_id'],))
+                        open_positions = [dict(r) for r in c_close.fetchall()]
+                        if open_positions:
+                            sell_price = float(trade.get('price') or 0)
+                            for op in open_positions:
+                                entry_price = float(op.get('price') or 0)
+                                op_size = float(op.get('our_size') or 0)
+                                pnl = (sell_price - entry_price) * op_size
+                                pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
+                                actual_result = 'WIN' if pnl >= 0 else 'LOSS'
+                                c_close.execute('''
+                                    UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+                                    WHERE id = ?
+                                ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
+                                log_event('ENGINE', actual_result, f'[MOCK] Auto-closed position: {market_title[:50]}',
+                                          f'Entry: {entry_price:.2f} Exit: {sell_price:.2f} PnL: ${pnl:.2f}')
+                            _should_skip_sell = True
+                    if _should_skip_sell:
                         # Advance timestamp and continue (don't open a new SELL copy trade in mock)
                         ts_key = 'last_mock_processed_timestamp'
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
-                    conn_close.close()
 
                 if mock_mode:
                     success, response, our_size = execute_mock_trade(trade, config)
@@ -971,25 +939,22 @@ def copy_trading_loop():
                     end_date = get_market_end_date(trade['condition_id'])
 
                 # Record in DB with market metadata
-                conn = get_db()
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, end_date, executed_at, response)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    trade['id'], trader_name, market_title,
-                    trade.get('slug', ''), trade.get('event_slug', ''),
-                    trade.get('condition_id', ''), trade.get('icon', ''),
-                    trade.get('outcome', ''), side_str,
-                    trade_size, our_size, trade.get('price', 0),
-                    'SUCCESS' if success else 'FAILED',
-                    1 if mock_mode else 0,
-                    'OPEN' if side_str == 'BUY' else 'CLOSED',
-                    end_date,
-                    datetime.now().isoformat(), response
-                ))
-                conn.commit()
-                conn.close()
+                with get_write_conn() as conn:
+                    conn.execute('''
+                        INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, end_date, executed_at, response)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        trade['id'], trader_name, market_title,
+                        trade.get('slug', ''), trade.get('event_slug', ''),
+                        trade.get('condition_id', ''), trade.get('icon', ''),
+                        trade.get('outcome', ''), side_str,
+                        trade_size, our_size, trade.get('price', 0),
+                        'SUCCESS' if success else 'FAILED',
+                        1 if mock_mode else 0,
+                        'OPEN' if side_str == 'BUY' else 'CLOSED',
+                        end_date,
+                        datetime.now().isoformat(), response
+                    ))
 
                 if success:
                     copy_engine['trades_copied'] += 1

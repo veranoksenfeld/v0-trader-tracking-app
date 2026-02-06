@@ -3,33 +3,24 @@ Polymarket Copy Trader - Trade execution module
 Used by app.py's built-in copy trading engine.
 Can also be run standalone for testing.
 """
-import sqlite3
 import time
 import json
 import os
 from datetime import datetime
 
-DATABASE = 'polymarket_trades.db'
+from db import get_db, get_write_conn, DATABASE
+
 CONFIG_FILE = 'config.json'
 
 
 def log_event(level, message, details=''):
     """Write to unified_log table so the UI can display copy_trader events"""
     try:
-        conn = sqlite3.connect(DATABASE, timeout=60)
-        conn.execute('PRAGMA journal_mode=WAL')
-        conn.execute('PRAGMA busy_timeout=60000')
-        conn.execute('PRAGMA synchronous=NORMAL')
-        conn.row_factory = sqlite3.Row
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
+        with get_write_conn() as conn:
+            conn.execute(
                 'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
                 (datetime.now().isoformat(), 'TRADER', level, message, details)
             )
-            conn.commit()
-        finally:
-            conn.close()
     except Exception:
         pass
 
@@ -46,15 +37,6 @@ except ImportError:
 
 HOST = "https://clob.polymarket.com"
 CHAIN_ID = 137
-
-
-def get_db():
-    conn = sqlite3.connect(DATABASE, timeout=60, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA busy_timeout=60000')
-    conn.execute('PRAGMA synchronous=NORMAL')
-    return conn
 
 
 def load_config():

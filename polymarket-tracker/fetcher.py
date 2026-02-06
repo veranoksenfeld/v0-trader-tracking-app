@@ -5,17 +5,13 @@ transactions for tracked wallets.  Falls back to the Polymarket
 Data API REST endpoints for trade enrichment.
 """
 import requests
-import sqlite3
 import time
 import json
 import os
 import threading
 from datetime import datetime
 
-DATABASE = 'polymarket_trades.db'
-
-# Serialised write lock to prevent "database is locked" errors
-_db_write_lock = threading.Lock()
+from db import get_db, get_conn, get_write_conn, db_write, DATABASE, _write_lock as _db_write_lock
 
 # ---------------------------------------------------------------------------
 # Polygon RPC configuration
@@ -55,28 +51,13 @@ _market_cache = {}
 def log_event(level, message, details=''):
     """Write to unified_log table so the UI can display fetcher events."""
     try:
-        with _db_write_lock:
-            conn = get_db()
-            try:
-                cursor = conn.cursor()
-                cursor.execute(
-                    'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
-                    (datetime.now().isoformat(), 'FETCHER', level, message, details)
-                )
-                conn.commit()
-            finally:
-                conn.close()
+        with get_write_conn() as conn:
+            conn.execute(
+                'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+                (datetime.now().isoformat(), 'FETCHER', level, message, details)
+            )
     except Exception:
         pass
-
-
-def get_db():
-    conn = sqlite3.connect(DATABASE, timeout=60, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA busy_timeout=60000')
-    conn.execute('PRAGMA synchronous=NORMAL')
-    return conn
 
 
 def get_tracked_traders():
@@ -683,7 +664,6 @@ def poll_loop():
                 time.sleep(POLL_INTERVAL)
                 continue
 
-            conn = get_db()
             total_new = 0
 
             for trader in traders:
@@ -691,11 +671,14 @@ def poll_loop():
                 addr = trader['wallet_address']
                 name = trader['name'] or addr[:10] + '...'
 
-                # Refresh profile periodically
+                # Refresh profile periodically -- open+close a conn just for this
                 if not trader['name'] and (time.time() - last_profile_refresh > 300):
-                    update_trader_profile(tid, addr, conn)
+                    with get_conn() as c:
+                        update_trader_profile(tid, addr, c)
 
-                new = fetch_trades_for_trader(tid, addr, conn, limit=20)
+                # Each trader gets its own short-lived connection
+                with get_conn() as c:
+                    new = fetch_trades_for_trader(tid, addr, c, limit=20)
                 total_new += new
                 time.sleep(0.5)
 
@@ -706,7 +689,6 @@ def poll_loop():
             if time.time() - last_profile_refresh > 300:
                 last_profile_refresh = time.time()
 
-            conn.close()
         except Exception as e:
             print(f"[{datetime.now()}] Poll error: {e}")
 
@@ -729,14 +711,14 @@ def run_fetcher():
     traders = get_tracked_traders()
     if traders:
         print(f"  Tracking {len(traders)} trader(s). Running initial fetch...")
-        conn = get_db()
         for trader in traders:
             tid = trader['id']
             addr = trader['wallet_address']
             name = trader['name'] or addr[:10] + '...'
 
             if not trader['name']:
-                update_trader_profile(tid, addr, conn)
+                with get_conn() as c:
+                    update_trader_profile(tid, addr, c)
 
             # Register addresses for RPC on-chain monitoring
             rpc_watch_address(addr)
@@ -744,10 +726,10 @@ def run_fetcher():
             if proxy and proxy != addr.lower():
                 rpc_watch_address(proxy)
 
-            new = fetch_trades_for_trader(tid, addr, conn, limit=100)
+            with get_conn() as c:
+                new = fetch_trades_for_trader(tid, addr, c, limit=100)
             print(f"  {name}: {new} new trade(s)")
             time.sleep(0.5)
-        conn.close()
         print()
     else:
         print("  No traders tracked yet. Add traders via the web UI.\n")
