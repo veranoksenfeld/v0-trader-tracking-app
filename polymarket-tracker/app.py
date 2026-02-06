@@ -24,132 +24,7 @@ copy_engine = {
     'last_check': None,
     'trades_copied': 0,
     'trades_failed': 0,
-    'trades_blocked': 0,
 }
-
-
-# ============================================
-#  CIRCUIT BREAKER / RISK GUARD
-#  Ported from Rust bot: src/trading/risk_guard.rs
-# ============================================
-
-class RiskGuard:
-    """
-    Multi-layer safety system ported from the Rust copy trading bot.
-    Tracks consecutive large trades per token and trips a circuit breaker
-    when rapid large-trade sequences exceed a threshold on thin order books.
-    """
-    def __init__(self, config=None):
-        cfg = config or {}
-        self.large_trade_threshold = cfg.get('cb_large_trade_usd', 500)   # USD
-        self.consecutive_trigger = cfg.get('cb_consecutive_trigger', 5)
-        self.sequence_window = cfg.get('cb_sequence_window_secs', 40)
-        self.min_depth_usd = cfg.get('cb_min_depth_usd', 200)
-        self.trip_duration = cfg.get('cb_trip_duration_secs', 300)  # 5 min default
-        self.max_open_positions = cfg.get('max_open_positions', 10)
-        self.max_risk_per_trade_pct = cfg.get('max_risk_per_trade_pct', 7)
-        # State: token_id -> {'trades': [(timestamp, size)], 'tripped_until': float|None}
-        self._tokens = {}
-        self._lock = threading.Lock()
-        self.stats = {'allowed': 0, 'blocked': 0, 'tripped': 0}
-
-    def check(self, token_id, trade_size_usd, side='BUY'):
-        """
-        Fast-path check. Returns (allowed: bool, reason: str, details: dict)
-        """
-        now = time.time()
-        with self._lock:
-            state = self._tokens.setdefault(token_id, {'trades': [], 'tripped_until': None})
-
-            # Check if tripped
-            if state['tripped_until'] and now < state['tripped_until']:
-                secs_left = int(state['tripped_until'] - now)
-                self.stats['blocked'] += 1
-                return False, 'TRIPPED', {'secs_left': secs_left, 'token': token_id[:16]}
-
-            # Clear expired trip
-            if state['tripped_until'] and now >= state['tripped_until']:
-                state['tripped_until'] = None
-
-            # SELL trades always allowed (exiting positions = reducing risk)
-            if side.upper() == 'SELL':
-                self.stats['allowed'] += 1
-                return True, 'SELL_ALLOWED', {}
-
-            # Small trade fast path
-            if trade_size_usd < self.large_trade_threshold:
-                self.stats['allowed'] += 1
-                return True, 'SMALL_TRADE', {}
-
-            # Count consecutive large trades in window
-            cutoff = now - self.sequence_window
-            state['trades'] = [(ts, sz) for ts, sz in state['trades'] if ts > cutoff]
-            consecutive = sum(1 for ts, sz in state['trades'] if sz >= self.large_trade_threshold) + 1
-            state['trades'].append((now, trade_size_usd))
-
-            # Prune old entries
-            if len(state['trades']) > 20:
-                state['trades'] = state['trades'][-20:]
-
-            if consecutive >= self.consecutive_trigger:
-                # Trip the circuit breaker
-                state['tripped_until'] = now + self.trip_duration
-                self.stats['tripped'] += 1
-                self.stats['blocked'] += 1
-                return False, 'SEQ_TRIP', {'consecutive': consecutive, 'token': token_id[:16]}
-
-            self.stats['allowed'] += 1
-            return True, 'SEQ_OK', {'consecutive': consecutive}
-
-    def check_open_positions(self, current_open):
-        """Enforce max open positions limit"""
-        if current_open >= self.max_open_positions:
-            return False, f'MAX_POSITIONS ({current_open}/{self.max_open_positions})'
-        return True, 'OK'
-
-    def check_trade_risk(self, trade_size_usd, portfolio_value):
-        """Enforce max risk per trade as % of portfolio"""
-        if portfolio_value <= 0:
-            return True, 'NO_PORTFOLIO'
-        risk_pct = (trade_size_usd / portfolio_value) * 100
-        if risk_pct > self.max_risk_per_trade_pct:
-            return False, f'RISK_TOO_HIGH ({risk_pct:.1f}% > {self.max_risk_per_trade_pct}%)'
-        return True, f'RISK_OK ({risk_pct:.1f}%)'
-
-    def reset(self, token_id=None):
-        with self._lock:
-            if token_id:
-                self._tokens.pop(token_id, None)
-            else:
-                self._tokens.clear()
-                self.stats = {'allowed': 0, 'blocked': 0, 'tripped': 0}
-
-    def get_status(self):
-        with self._lock:
-            tripped_tokens = []
-            now = time.time()
-            for tid, state in self._tokens.items():
-                if state['tripped_until'] and now < state['tripped_until']:
-                    tripped_tokens.append({
-                        'token': tid[:24],
-                        'secs_left': int(state['tripped_until'] - now),
-                    })
-            return {
-                'stats': dict(self.stats),
-                'tripped_tokens': tripped_tokens,
-                'config': {
-                    'large_trade_threshold': self.large_trade_threshold,
-                    'consecutive_trigger': self.consecutive_trigger,
-                    'sequence_window': self.sequence_window,
-                    'trip_duration': self.trip_duration,
-                    'max_open_positions': self.max_open_positions,
-                    'max_risk_per_trade_pct': self.max_risk_per_trade_pct,
-                }
-            }
-
-
-# Global risk guard instance
-risk_guard = RiskGuard()
 
 
 # ============================================
@@ -676,14 +551,11 @@ def execute_live_trade(client, trade, config):
 
 
 def copy_trading_loop():
-    """Main copy trading loop with circuit breaker, tiered execution, and strategy-based sizing"""
-    global copy_engine, risk_guard
-    log_event('ENGINE', 'INFO', 'Copy trading engine started with Risk Guard + Tiered Execution')
+    """Main copy trading loop with tiered execution and strategy-based sizing"""
+    global copy_engine
+    log_event('ENGINE', 'INFO', 'Copy trading engine started with Tiered Execution')
     copy_engine['running'] = True
 
-    # Initialize risk guard from config
-    cfg = load_config()
-    risk_guard = RiskGuard(cfg)
     market_cache.populate_from_trades()
     log_event('ENGINE', 'INFO', f'Market cache loaded: {market_cache.size()} markets')
 
@@ -730,9 +602,9 @@ def copy_trading_loop():
 
             new_trades = [dict(row) for row in cursor.fetchall()]
 
-            # Count open positions for risk guard
-            cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE result='OPEN' AND status='SUCCESS'")
-            open_positions = cursor.fetchone()['c']
+            # Count total successful copy trades this session for max_trades limit
+            cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE status='SUCCESS'")
+            total_copied = cursor.fetchone()['c']
             conn.close()
 
             copy_engine['last_check'] = datetime.now().isoformat()
@@ -743,6 +615,17 @@ def copy_trading_loop():
 
             mode_label = 'MOCK' if mock_mode else 'LIVE'
             log_event('ENGINE', 'INFO', f'Found {len(new_trades)} trade(s) to copy [{mode_label}]')
+
+            # Check max trades limit
+            max_trades = config.get('max_trades', 0)
+            if max_trades > 0 and total_copied >= max_trades:
+                log_event('ENGINE', 'SKIP', f'Max trades limit reached ({total_copied}/{max_trades})')
+                # Still advance timestamp so we don't re-check the same trades
+                ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                config[ts_key] = new_trades[-1]['timestamp']
+                save_config(config)
+                time.sleep(10)
+                continue
 
             # For live mode, check balance and init CLOB
             client = None
@@ -759,6 +642,11 @@ def copy_trading_loop():
                     continue
 
             for trade in new_trades:
+                # Re-check max trades inside loop
+                if max_trades > 0 and copy_engine['trades_copied'] + total_copied >= max_trades:
+                    log_event('ENGINE', 'SKIP', f'Max trades limit reached')
+                    break
+
                 min_size = config.get('min_trade_size', 10)
                 trade_size = float(trade.get('usdc_size') or 0)
                 side_str = (trade.get('side') or '').upper()
@@ -775,30 +663,6 @@ def copy_trading_loop():
 
                 trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
                 market_title = trade.get('title', 'Unknown')
-
-                # --- RISK GUARD CHECK (from Rust risk_guard.rs) ---
-                if config.get('risk_guard_enabled', True):
-                    # Check circuit breaker
-                    allowed, reason, details = risk_guard.check(token_id, trade_size, side_str)
-                    if not allowed:
-                        copy_engine['trades_blocked'] = copy_engine.get('trades_blocked', 0) + 1
-                        log_event('ENGINE', 'SKIP', f'[RISK GUARD] {reason}: {trader_name}',
-                                  f'{market_title[:40]} | ${trade_size:.2f} | {json.dumps(details)}')
-                        ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                        config[ts_key] = trade['timestamp']
-                        save_config(config)
-                        continue
-
-                    # Check max open positions
-                    if side_str == 'BUY':
-                        pos_ok, pos_reason = risk_guard.check_open_positions(open_positions)
-                        if not pos_ok:
-                            copy_engine['trades_blocked'] = copy_engine.get('trades_blocked', 0) + 1
-                            log_event('ENGINE', 'SKIP', f'[RISK GUARD] {pos_reason}', f'{market_title[:50]}')
-                            ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                            config[ts_key] = trade['timestamp']
-                            save_config(config)
-                            continue
 
                 # Update market cache
                 if trade.get('condition_id'):
@@ -845,8 +709,6 @@ def copy_trading_loop():
 
                 if success:
                     copy_engine['trades_copied'] += 1
-                    if side_str == 'BUY':
-                        open_positions += 1
                     log_event('ENGINE', 'SUCCESS', f'[{mode_label}|{tier_label}] ${our_size:.2f} {side_str} on {market_title[:50]}', response[:200])
                 else:
                     copy_engine['trades_failed'] += 1
@@ -1056,20 +918,15 @@ def get_config():
         'engine_running': copy_engine['running'] and copy_engine['thread'] is not None and copy_engine['thread'].is_alive(),
         'trades_copied': copy_engine['trades_copied'],
         'trades_failed': copy_engine['trades_failed'],
-        'trades_blocked': copy_engine.get('trades_blocked', 0),
         'last_check': copy_engine['last_check'],
         'clob_available': CLOB_AVAILABLE,
         'signature_type': config.get('signature_type', 1),
         'mock_mode': mock_mode,
-        # Strategy & risk guard (from Rust bot)
+        # Strategy settings
         'copy_strategy': config.get('copy_strategy', 'PERCENTAGE'),
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
-        'risk_guard_enabled': config.get('risk_guard_enabled', True),
-        'max_open_positions': config.get('max_open_positions', 10),
-        'max_risk_per_trade_pct': config.get('max_risk_per_trade_pct', 7),
-        'cb_large_trade_usd': config.get('cb_large_trade_usd', 500),
-        'cb_consecutive_trigger': config.get('cb_consecutive_trigger', 5),
+        'max_trades': config.get('max_trades', 0),
     }
     return jsonify(safe)
 
@@ -1101,16 +958,8 @@ def update_config():
         config['fixed_trade_size'] = max(0.1, float(data['fixed_trade_size']))
     if 'prob_sizing_enabled' in data:
         config['prob_sizing_enabled'] = bool(data['prob_sizing_enabled'])
-    if 'risk_guard_enabled' in data:
-        config['risk_guard_enabled'] = bool(data['risk_guard_enabled'])
-    if 'max_open_positions' in data:
-        config['max_open_positions'] = max(1, int(data['max_open_positions']))
-    if 'max_risk_per_trade_pct' in data:
-        config['max_risk_per_trade_pct'] = max(1, min(100, float(data['max_risk_per_trade_pct'])))
-    if 'cb_large_trade_usd' in data:
-        config['cb_large_trade_usd'] = max(10, float(data['cb_large_trade_usd']))
-    if 'cb_consecutive_trigger' in data:
-        config['cb_consecutive_trigger'] = max(2, int(data['cb_consecutive_trigger']))
+    if 'max_trades' in data:
+        config['max_trades'] = max(0, int(data['max_trades']))
     save_config(config)
     return jsonify({'success': True})
 
@@ -1229,19 +1078,6 @@ def close_copy_trade(trade_id):
     log_event('ENGINE', actual_result, f'Trade closed: {td.get("market_title", "")[:50]}', f'PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
     return jsonify({'success': True, 'pnl': round(pnl, 4), 'result': actual_result})
 
-
-@app.route('/api/risk-guard', methods=['GET'])
-def get_risk_guard_status():
-    """Get circuit breaker / risk guard status"""
-    return jsonify(risk_guard.get_status())
-
-
-@app.route('/api/risk-guard/reset', methods=['POST'])
-def reset_risk_guard():
-    """Reset all circuit breaker trips"""
-    risk_guard.reset()
-    log_event('ENGINE', 'INFO', 'Risk guard reset')
-    return jsonify({'success': True})
 
 
 @app.route('/api/market-cache/stats', methods=['GET'])

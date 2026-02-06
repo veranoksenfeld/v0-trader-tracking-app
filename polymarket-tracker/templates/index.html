@@ -87,8 +87,7 @@
         .toggle.active::after { transform:translateX(22px); }
         .toggle-row.mock-row { background:linear-gradient(135deg,#431407,#7c2d12); }
         .toggle-row.mock-row .info p { color:#fdba74; }
-        .toggle-row.risk-row { background:linear-gradient(135deg,#0c4a6e,#164e63); }
-        .toggle-row.risk-row .info p { color:#67e8f9; }
+
         .stats-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr)); gap:10px; margin-bottom:16px; }
         .stat-card { background:var(--bg-input); border-radius:8px; padding:12px; text-align:center; }
         .stat-card .val { font-size:18px; font-weight:700; }
@@ -176,9 +175,7 @@
         .strategy-select:focus { border-color:var(--accent); }
         .config-input { padding:6px 10px; background:var(--bg-input); border:1px solid var(--border); border-radius:6px; color:var(--text); font-size:12px; width:70px; text-align:right; outline:none; }
         .config-input:focus { border-color:var(--accent); }
-        .risk-panel { background:linear-gradient(135deg,#0f172a,#1e293b); border:1px solid #334155; border-radius:12px; padding:16px; margin-bottom:16px; }
-        .risk-panel h3 { color:var(--cyan); margin-bottom:12px; font-size:13px; letter-spacing:.5px; }
-        .risk-stat { display:inline-flex; align-items:center; gap:5px; padding:4px 10px; background:rgba(6,182,212,0.1); border:1px solid rgba(6,182,212,0.2); border-radius:5px; font-size:11px; color:var(--cyan); margin-right:6px; margin-bottom:6px; }
+
         .tier-badge { display:inline-block; padding:2px 6px; border-radius:3px; font-size:9px; font-weight:700; text-transform:uppercase; letter-spacing:.3px; }
         .tier-WHALE { background:rgba(168,85,247,0.15); color:#c084fc; }
         .tier-LARGE { background:rgba(59,130,246,0.15); color:#60a5fa; }
@@ -225,21 +222,7 @@
                     <div class="pnl-card"><div class="val" style="color:var(--yellow);" id="pnl-open">0</div><div class="lbl">Open</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-total">$0.00</div><div class="lbl">Total PnL</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-winrate">0%</div><div class="lbl">Win Rate</div></div>
-                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-blocked">0</div><div class="lbl">Blocked</div></div>
-                </div>
-
-                <!-- Risk Guard Panel -->
-                <div class="risk-panel" id="risk-panel">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                        <h3 style="margin-bottom:0;">RISK GUARD / CIRCUIT BREAKER</h3>
-                        <button class="btn btn-sm btn-outline" style="font-size:10px;color:var(--cyan);border-color:rgba(6,182,212,0.3);" onclick="resetRiskGuard()">Reset Trips</button>
-                    </div>
-                    <div id="risk-stats">
-                        <span class="risk-stat">Allowed: <strong id="rg-allowed">0</strong></span>
-                        <span class="risk-stat">Blocked: <strong id="rg-blocked">0</strong></span>
-                        <span class="risk-stat">Tripped: <strong id="rg-tripped">0</strong></span>
-                    </div>
-                    <div id="tripped-tokens" style="margin-top:8px;"></div>
+                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-max-trades">0</div><div class="lbl">Max Trades</div></div>
                 </div>
 
                 <div class="grid-2">
@@ -247,7 +230,6 @@
                     <div class="card">
                         <h3>Copy Trading Engine</h3>
                         <div class="toggle-row mock-row" style="margin-bottom:10px;"><div class="info"><h4>Mock Mode</h4><p>Simulate trades without real money</p></div><div class="toggle" id="mock-toggle" onclick="toggleMock()"></div></div>
-                        <div class="toggle-row risk-row" style="margin-bottom:10px;"><div class="info"><h4>Risk Guard</h4><p>Circuit breaker + position limits</p></div><div class="toggle active" id="rg-toggle" onclick="toggleRiskGuard()"></div></div>
                         <div class="status-row"><span class="label">Engine</span><span class="value" id="engine-status-text"><span class="dot on"></span>Auto-running</span></div>
                         <div class="status-row"><span class="label">Mode</span><span class="value" id="mode-display" style="color:var(--green);">LIVE</span></div>
                         <div class="status-row">
@@ -255,17 +237,17 @@
                             <span class="value">
                                 <select class="strategy-select" id="strategy-select" onchange="updateStrategy()">
                                     <option value="PERCENTAGE">Percentage</option>
-                                    <option value="FIXED">Fixed Size</option>
+                                    <option value="FIXED">Fixed Amount</option>
                                     <option value="ADAPTIVE">Adaptive (Tiered)</option>
                                 </select>
                             </span>
                         </div>
+                        <div class="status-row" id="copy-pct-row"><span class="label">Copy %</span><span class="value"><input class="config-input" id="copy-pct-input" type="number" min="1" max="100" value="10" onchange="updateCopyPct()"><span style="color:var(--text-dim);font-size:11px;">%</span></span></div>
+                        <div class="status-row" id="fixed-size-row" style="display:none;"><span class="label">Fixed Amount</span><span class="value">$<input class="config-input" id="fixed-size-input" type="number" min="0.1" step="0.1" value="10" onchange="updateFixedSize()"></span></div>
+                        <div class="status-row"><span class="label">Max Trade $</span><span class="value">$<input class="config-input" id="copy-max-input" type="number" min="1" value="100" onchange="updateMaxTrade()"></span></div>
+                        <div class="status-row"><span class="label">Max Trades</span><span class="value"><input class="config-input" id="max-trades-input" type="number" min="0" value="0" onchange="updateMaxTrades()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
-                        <div class="status-row"><span class="label">Blocked (Risk)</span><span class="value" style="color:var(--cyan);" id="engine-blocked">0</span></div>
-                        <div class="status-row"><span class="label">Copy %</span><span class="value"><input class="config-input" id="copy-pct-input" type="number" min="1" max="100" value="10" onchange="updateCopyPct()"><span style="color:var(--text-dim);font-size:11px;">%</span></span></div>
-                        <div class="status-row"><span class="label">Max Trade</span><span class="value">$<input class="config-input" id="copy-max-input" type="number" min="1" value="100" onchange="updateMaxTrade()"></span></div>
-                        <div class="status-row"><span class="label">Max Open</span><span class="value"><input class="config-input" id="max-open-input" type="number" min="1" max="50" value="10" onchange="updateMaxOpen()"></span></div>
                         <div class="status-row"><span class="label">Prob Sizing</span><span class="value"><div class="toggle" id="prob-toggle" onclick="toggleProbSizing()" style="width:36px;height:20px;"></div></span></div>
                         <div class="status-row"><span class="label">Last Check</span><span class="value" style="font-size:11px;color:var(--text-dim);" id="last-check">--</span></div>
                     </div>
@@ -424,17 +406,19 @@
         const current=!!config.mock_mode, next=!current;
         try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mock_mode:next})}); if(r.ok){config.mock_mode=next;document.getElementById('mock-toggle').classList.toggle('active',next);updateMockUI();showToast(next?'Mock mode ON':'Mock mode OFF - LIVE!',next?'info':'success');setTimeout(loadConfig,500);}}catch(e){showToast('Error','error');}
     }
-    async function toggleRiskGuard() {
-        const next=!config.risk_guard_enabled;
-        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({risk_guard_enabled:next})}); if(r.ok){config.risk_guard_enabled=next;document.getElementById('rg-toggle').classList.toggle('active',next);showToast(next?'Risk Guard ON':'Risk Guard OFF','info');}}catch(e){}
-    }
+
     async function toggleProbSizing() {
         const next=!config.prob_sizing_enabled;
         try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prob_sizing_enabled:next})}); if(r.ok){config.prob_sizing_enabled=next;document.getElementById('prob-toggle').classList.toggle('active',next);showToast(next?'Probability sizing ON':'Probability sizing OFF','info');}}catch(e){}
     }
     async function updateStrategy() {
         const v=document.getElementById('strategy-select').value;
-        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_strategy:v})});config.copy_strategy=v;showToast('Strategy: '+v,'success');}catch(e){}
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_strategy:v})});config.copy_strategy=v;showToast('Strategy: '+v,'success');toggleStrategyFields(v);}catch(e){}
+    }
+    function toggleStrategyFields(strategy) {
+        const pctRow=document.getElementById('copy-pct-row'),fixedRow=document.getElementById('fixed-size-row');
+        if(strategy==='FIXED'){pctRow.style.display='none';fixedRow.style.display='flex';}
+        else{pctRow.style.display='flex';fixedRow.style.display='none';}
     }
     async function updateCopyPct() {
         const v=parseInt(document.getElementById('copy-pct-input').value)||10;
@@ -444,12 +428,13 @@
         const v=parseFloat(document.getElementById('copy-max-input').value)||100;
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trade_size:v})});showToast('Max trade updated','success');}catch(e){}
     }
-    async function updateMaxOpen() {
-        const v=parseInt(document.getElementById('max-open-input').value)||10;
-        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_open_positions:v})});showToast('Max open positions updated','success');}catch(e){}
+    async function updateMaxTrades() {
+        const v=parseInt(document.getElementById('max-trades-input').value)||0;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trades:v})});config.max_trades=v;showToast(v>0?'Max trades: '+v:'Max trades: unlimited','success');}catch(e){}
     }
-    async function resetRiskGuard() {
-        try{await fetch('/api/risk-guard/reset',{method:'POST'});showToast('Risk guard reset','success');fetchRiskGuard();}catch(e){}
+    async function updateFixedSize() {
+        const v=parseFloat(document.getElementById('fixed-size-input').value)||10;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixed_trade_size:v})});showToast('Fixed size: $'+v,'success');}catch(e){}
     }
 
     function updateStatus() {
@@ -467,14 +452,14 @@
         try{const r=await fetch('/api/config'); config=await r.json();
         document.getElementById('copy-pct-input').value=config.copy_percentage||10;
         document.getElementById('copy-max-input').value=config.max_trade_size||100;
-        document.getElementById('max-open-input').value=config.max_open_positions||10;
+        document.getElementById('max-trades-input').value=config.max_trades||0;
+        document.getElementById('fixed-size-input').value=config.fixed_trade_size||10;
         document.getElementById('engine-copied').textContent=(config.trades_copied||0).toLocaleString();
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
-        document.getElementById('engine-blocked').textContent=(config.trades_blocked||0).toLocaleString();
         document.getElementById('last-check').textContent=config.last_check?new Date(config.last_check).toLocaleTimeString():'--';
         document.getElementById('strategy-select').value=config.copy_strategy||'PERCENTAGE';
-        document.getElementById('rg-toggle').classList.toggle('active',config.risk_guard_enabled!==false);
         document.getElementById('prob-toggle').classList.toggle('active',!!config.prob_sizing_enabled);
+        toggleStrategyFields(config.copy_strategy||'PERCENTAGE');
         updateStatus();updateMockUI();renderWallet();}catch(e){}
     }
     function renderWallet() {
@@ -491,14 +476,6 @@
             banner.style.display='flex';document.getElementById('header-balance').style.display='none';
             el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div><div style="margin-top:12px;"><div class="info-banner info" style="margin-bottom:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><p>Run <code>python setup_config.py</code> to configure, or enable Mock Mode to test.</p></div></div>`;
         }
-    }
-
-    // ---- Risk Guard ----
-    async function fetchRiskGuard() {
-        try{const r=await fetch('/api/risk-guard'); const d=await r.json();
-        if(d.stats){document.getElementById('rg-allowed').textContent=d.stats.allowed||0;document.getElementById('rg-blocked').textContent=d.stats.blocked||0;document.getElementById('rg-tripped').textContent=d.stats.tripped||0;}
-        const el=document.getElementById('tripped-tokens');
-        if(d.tripped_tokens&&d.tripped_tokens.length){el.innerHTML='<div style="font-size:11px;color:var(--red);margin-top:4px;">Tripped: '+d.tripped_tokens.map(t=>`<span class="risk-stat" style="color:var(--red);background:rgba(239,68,68,0.1);border-color:rgba(239,68,68,0.2);">${t.token} (${t.secs_left}s left)</span>`).join('')+'</div>';}else{el.innerHTML='';}}catch(e){}
     }
 
     // ---- Stats & Trades ----
@@ -556,7 +533,7 @@
         document.getElementById('pnl-total').style.color=tp>=0?'var(--green)':'var(--red)';
         document.getElementById('pnl-winrate').textContent=(s.win_rate||0)+'%';
         document.getElementById('pnl-winrate').style.color=wrColor(s.win_rate||0);
-        document.getElementById('pnl-blocked').textContent=config.trades_blocked||0;
+        const mt=config.max_trades||0; document.getElementById('pnl-max-trades').textContent=mt>0?mt:'--';
         }catch(e){}
     }
 
@@ -596,10 +573,9 @@
     }
 
     // ---- Init ----
-    fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();fetchRiskGuard();
+    fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();
     connectSSE();
     setInterval(loadConfig,30000);
-    setInterval(fetchRiskGuard,15000);
 </script>
 </body>
 </html>
