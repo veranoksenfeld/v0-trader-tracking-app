@@ -8,7 +8,62 @@ Usage:
 """
 import json
 import os
-import getpass
+import sys
+
+
+def input_secret(prompt=""):
+    """Read input showing * for each character typed."""
+    print(prompt, end='', flush=True)
+    chars = []
+    try:
+        if sys.platform == 'win32':
+            import msvcrt
+            while True:
+                ch = msvcrt.getwch()
+                if ch in ('\r', '\n'):
+                    print()
+                    break
+                if ch == '\b' or ch == '\x7f':
+                    if chars:
+                        chars.pop()
+                        sys.stdout.write('\b \b')
+                        sys.stdout.flush()
+                elif ch == '\x03':
+                    raise KeyboardInterrupt
+                else:
+                    chars.append(ch)
+                    sys.stdout.write('*')
+                    sys.stdout.flush()
+        else:
+            import tty, termios
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch in ('\r', '\n'):
+                        sys.stdout.write('\n')
+                        sys.stdout.flush()
+                        break
+                    if ch == '\x7f' or ch == '\x08':
+                        if chars:
+                            chars.pop()
+                            sys.stdout.write('\b \b')
+                            sys.stdout.flush()
+                    elif ch == '\x03':
+                        raise KeyboardInterrupt
+                    else:
+                        chars.append(ch)
+                        sys.stdout.write('*')
+                        sys.stdout.flush()
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except (ImportError, OSError):
+        # Fallback if terminal tricks unavailable
+        import getpass
+        return getpass.getpass(prompt)
+    return ''.join(chars)
 
 CONFIG_FILE = 'config.json'
 
@@ -84,7 +139,7 @@ def setup():
     print("--- Wallet Configuration ---")
     print("Get your private key from: https://reveal.polymarket.com")
     print()
-    pk = getpass.getpass("  Private Key (hidden): ").strip()
+    pk = input_secret("  Private Key (shows *): ").strip()
     if not pk:
         print("ERROR: Private key is required.")
         return

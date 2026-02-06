@@ -1288,37 +1288,28 @@ def get_trades():
 
     # On-the-fly backfill: if any trades are missing end_date, try to fill them now
     missing = [t for t in trades if not t.get('end_date') and (t.get('condition_id') or t.get('asset'))]
-    has_end = len([t for t in trades if t.get('end_date')])
-    print(f"  [trades API] {len(trades)} trades, {has_end} with end_date, {len(missing)} missing")
     if missing:
         filled = 0
         seen = set()
-        for t in missing[:15]:  # Limit to avoid slow responses
+        for t in missing[:15]:
             key = t.get('condition_id') or t.get('asset') or ''
             if key in seen:
                 continue
             seen.add(key)
             cid = t.get('condition_id', '')
             asset_val = t.get('asset', '')
-            print(f"    backfill: cid={cid[:20] if cid else 'N/A'}, asset={asset_val[:20] if asset_val else 'N/A'}")
             ed = get_market_end_date(cid, asset_val)
             if ed:
-                print(f"    -> found end_date: {ed}")
-                # Update DB
                 if cid:
                     cursor.execute('UPDATE trades SET end_date = ? WHERE condition_id = ? AND (end_date IS NULL OR end_date = "")', (ed, cid))
                 elif asset_val:
                     cursor.execute('UPDATE trades SET end_date = ? WHERE asset = ? AND (end_date IS NULL OR end_date = "")', (ed, asset_val))
-                # Update in-memory list too
                 for t2 in trades:
                     if (cid and t2.get('condition_id') == cid) or (asset_val and t2.get('asset') == asset_val):
                         t2['end_date'] = ed
                 filled += 1
-            else:
-                print(f"    -> no end_date found")
         if filled:
             conn.commit()
-        print(f"  [trades API] backfilled {filled}/{len(missing)} trades")
 
     conn.close()
     return jsonify(trades)
