@@ -20,21 +20,24 @@ except ImportError:
 
 DATABASE = 'polymarket_trades.db'
 
+# Serialised write lock to prevent "database is locked" errors
+_db_write_lock = threading.Lock()
+
 
 def log_event(level, message, details=''):
     """Write to unified_log table so the UI can display fetcher events"""
     try:
-        conn = sqlite3.connect(DATABASE, timeout=30)
-        conn.execute('PRAGMA journal_mode=WAL')
-        conn.execute('PRAGMA busy_timeout=30000')
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
-            (datetime.now().isoformat(), 'FETCHER', level, message, details)
-        )
-        conn.commit()
-        conn.close()
+        with _db_write_lock:
+            conn = get_db()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+                    (datetime.now().isoformat(), 'FETCHER', level, message, details)
+                )
+                conn.commit()
+            finally:
+                conn.close()
     except Exception:
         pass  # Table may not exist yet if app.py hasn't run
 
@@ -54,10 +57,11 @@ last_trade_timestamps = {}
 
 def get_db():
     """Get database connection with WAL mode and timeout for concurrency"""
-    conn = sqlite3.connect(DATABASE, timeout=30, check_same_thread=False)
+    conn = sqlite3.connect(DATABASE, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA busy_timeout=30000')
+    conn.execute('PRAGMA busy_timeout=60000')
+    conn.execute('PRAGMA synchronous=NORMAL')
     return conn
 
 
@@ -91,23 +95,24 @@ def update_trader_profile(trader_id, wallet_address, conn):
     """Update trader profile in database"""
     profile = fetch_trader_profile(wallet_address)
     if profile:
-        cursor = conn.cursor()
-        cursor.execute('''
-            UPDATE traders SET
-                name = ?, pseudonym = ?, bio = ?, profile_image = ?,
-                x_username = ?, verified_badge = ?, created_at = ?
-            WHERE id = ?
-        ''', (
-            profile.get('name'),
-            profile.get('pseudonym'),
-            profile.get('bio'),
-            profile.get('profileImage'),
-            profile.get('xUsername'),
-            1 if profile.get('verifiedBadge') else 0,
-            profile.get('createdAt'),
-            trader_id
-        ))
-        conn.commit()
+        with _db_write_lock:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE traders SET
+                    name = ?, pseudonym = ?, bio = ?, profile_image = ?,
+                    x_username = ?, verified_badge = ?, created_at = ?
+                WHERE id = ?
+            ''', (
+                profile.get('name'),
+                profile.get('pseudonym'),
+                profile.get('bio'),
+                profile.get('profileImage'),
+                profile.get('xUsername'),
+                1 if profile.get('verifiedBadge') else 0,
+                profile.get('createdAt'),
+                trader_id
+            ))
+            conn.commit()
         print(f"  Updated profile for {wallet_address[:10]}...")
 
 
@@ -151,30 +156,31 @@ def insert_trade(trader_id, trade, conn):
     if not tx_hash:
         return False
 
-    cursor = conn.cursor()
-    cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
-    if cursor.fetchone():
-        return False
+    with _db_write_lock:
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
+        if cursor.fetchone():
+            return False
 
-    # Detect position direction
-    direction = detect_trade_direction(trader_id, trade, conn)
+        # Detect position direction
+        direction = detect_trade_direction(trader_id, trade, conn)
 
-    cursor.execute('''
-        INSERT INTO trades (
-            trader_id, transaction_hash, side, size, price, usdc_size,
-            timestamp, title, slug, icon, event_slug, outcome,
-            outcome_index, condition_id, asset, direction
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
-        trader_id, tx_hash,
-        trade.get('side'), trade.get('size'), trade.get('price'),
-        trade.get('usdcSize'), trade.get('timestamp'),
-        trade.get('title'), trade.get('slug'), trade.get('icon'),
-        trade.get('eventSlug'), trade.get('outcome'),
-        trade.get('outcomeIndex'), trade.get('conditionId'),
-        trade.get('asset'), direction
-    ))
-    conn.commit()
+        cursor.execute('''
+            INSERT INTO trades (
+                trader_id, transaction_hash, side, size, price, usdc_size,
+                timestamp, title, slug, icon, event_slug, outcome,
+                outcome_index, condition_id, asset, direction
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            trader_id, tx_hash,
+            trade.get('side'), trade.get('size'), trade.get('price'),
+            trade.get('usdcSize'), trade.get('timestamp'),
+            trade.get('title'), trade.get('slug'), trade.get('icon'),
+            trade.get('eventSlug'), trade.get('outcome'),
+            trade.get('outcomeIndex'), trade.get('conditionId'),
+            trade.get('asset'), direction
+        ))
+        conn.commit()
     return True
 
 

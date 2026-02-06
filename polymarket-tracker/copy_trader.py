@@ -16,15 +16,20 @@ CONFIG_FILE = 'config.json'
 def log_event(level, message, details=''):
     """Write to unified_log table so the UI can display copy_trader events"""
     try:
-        conn = sqlite3.connect(DATABASE)
+        conn = sqlite3.connect(DATABASE, timeout=60)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=60000')
+        conn.execute('PRAGMA synchronous=NORMAL')
         conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
-            (datetime.now().isoformat(), 'TRADER', level, message, details)
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+                (datetime.now().isoformat(), 'TRADER', level, message, details)
+            )
+            conn.commit()
+        finally:
+            conn.close()
     except Exception:
         pass
 
@@ -44,8 +49,11 @@ CHAIN_ID = 137
 
 
 def get_db():
-    conn = sqlite3.connect(DATABASE)
+    conn = sqlite3.connect(DATABASE, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA busy_timeout=60000')
+    conn.execute('PRAGMA synchronous=NORMAL')
     return conn
 
 

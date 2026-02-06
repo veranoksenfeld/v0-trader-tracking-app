@@ -17,6 +17,9 @@ app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
 
+# ---- Serialised DB write lock (prevents "database is locked") ----
+_db_write_lock = threading.Lock()
+
 # ---- Copy Trading Engine State ----
 copy_engine = {
     'running': False,
@@ -205,24 +208,35 @@ def save_config(config):
 
 
 def get_db():
-    conn = sqlite3.connect(DATABASE, timeout=30, check_same_thread=False)
+    conn = sqlite3.connect(DATABASE, timeout=60, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute('PRAGMA journal_mode=WAL')
-    conn.execute('PRAGMA busy_timeout=30000')
+    conn.execute('PRAGMA busy_timeout=60000')
+    conn.execute('PRAGMA synchronous=NORMAL')
     return conn
+
+
+def db_write(fn):
+    """Execute a write operation under the global write lock to prevent 'database is locked'."""
+    with _db_write_lock:
+        return fn()
 
 
 def log_event(source, level, message, details=''):
     """Unified log: source is 'APP', 'ENGINE', 'FETCHER', or 'TRADER'"""
     try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute(
-            'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
-            (datetime.now().isoformat(), source, level, message, details)
-        )
-        conn.commit()
-        conn.close()
+        def _write():
+            conn = get_db()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    'INSERT INTO unified_log (timestamp, source, level, message, details) VALUES (?, ?, ?, ?, ?)',
+                    (datetime.now().isoformat(), source, level, message, details)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        db_write(_write)
     except Exception:
         pass
 
