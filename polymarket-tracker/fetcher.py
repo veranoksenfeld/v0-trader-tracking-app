@@ -24,7 +24,9 @@ DATABASE = 'polymarket_trades.db'
 def log_event(level, message, details=''):
     """Write to unified_log table so the UI can display fetcher events"""
     try:
-        conn = sqlite3.connect(DATABASE)
+        conn = sqlite3.connect(DATABASE, timeout=30)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=30000')
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
         cursor.execute(
@@ -51,9 +53,11 @@ last_trade_timestamps = {}
 
 
 def get_db():
-    """Get database connection"""
-    conn = sqlite3.connect(DATABASE)
+    """Get database connection with WAL mode and timeout for concurrency"""
+    conn = sqlite3.connect(DATABASE, timeout=30, check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA busy_timeout=30000')
     return conn
 
 
