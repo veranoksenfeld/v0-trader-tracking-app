@@ -762,9 +762,49 @@ def check_resolved_markets():
         return 0
 
 
+def backfill_end_dates():
+    """Fetch end_date for OPEN copy trades that are missing it."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, condition_id FROM copy_trades
+            WHERE result = 'OPEN' AND status = 'SUCCESS'
+            AND (end_date IS NULL OR end_date = '')
+            AND condition_id IS NOT NULL AND condition_id != ''
+        ''')
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        if not rows:
+            return
+
+        updated = 0
+        seen_cids = {}
+        for row in rows:
+            cid = row['condition_id']
+            if cid in seen_cids:
+                ed = seen_cids[cid]
+            else:
+                ed = get_market_end_date(cid)
+                seen_cids[cid] = ed
+                time.sleep(0.3)
+            if ed:
+                conn = get_db()
+                conn.execute('UPDATE copy_trades SET end_date = ? WHERE id = ?', (ed, row['id']))
+                conn.commit()
+                conn.close()
+                updated += 1
+        if updated > 0:
+            log_event('ENGINE', 'INFO', f'Backfilled end_date for {updated} open trade(s)')
+    except Exception as e:
+        log_event('ENGINE', 'WARN', 'End date backfill error', str(e))
+
+
 def resolution_checker_loop():
     """Background thread that periodically checks for resolved markets"""
     log_event('ENGINE', 'INFO', 'Market resolution checker started (every 30s)')
+    # Backfill end_dates for existing trades on first run
+    backfill_end_dates()
     while copy_engine.get('running', False):
         try:
             check_resolved_markets()
