@@ -107,6 +107,40 @@ def update_trader_profile(trader_id, wallet_address, conn):
         print(f"  Updated profile for {wallet_address[:10]}...")
 
 
+def detect_trade_direction(trader_id, trade, conn):
+    """
+    Detect if a trade is opening or closing a position.
+    BUY = OPEN LONG (adding to position)
+    SELL = CLOSE LONG (reducing/closing position)
+    Also check if SELL size >= total bought -> fully closing.
+    """
+    side = (trade.get('side') or '').upper()
+    condition_id = trade.get('conditionId') or ''
+    outcome = trade.get('outcome') or ''
+
+    if side == 'BUY':
+        return 'OPEN'  # Opening or adding to a long position
+    elif side == 'SELL':
+        # Check if there are existing BUY trades for this market
+        if condition_id:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COALESCE(SUM(CASE WHEN side='BUY' THEN CAST(size AS REAL) ELSE 0 END), 0) as bought,
+                       COALESCE(SUM(CASE WHEN side='SELL' THEN CAST(size AS REAL) ELSE 0 END), 0) as sold
+                FROM trades WHERE trader_id = ? AND condition_id = ? AND outcome = ?
+            ''', (trader_id, condition_id, outcome))
+            row = cursor.fetchone()
+            if row:
+                net = (row['bought'] or 0) - (row['sold'] or 0)
+                sell_size = float(trade.get('size') or 0)
+                if net <= 0 or sell_size >= net:
+                    return 'CLOSE'  # Fully closing position
+                else:
+                    return 'REDUCE'  # Partially reducing position
+        return 'CLOSE'
+    return 'UNKNOWN'
+
+
 def insert_trade(trader_id, trade, conn):
     """Insert a single trade into the database. Returns True if new."""
     tx_hash = trade.get('transactionHash')
@@ -118,12 +152,15 @@ def insert_trade(trader_id, trade, conn):
     if cursor.fetchone():
         return False
 
+    # Detect position direction
+    direction = detect_trade_direction(trader_id, trade, conn)
+
     cursor.execute('''
         INSERT INTO trades (
             trader_id, transaction_hash, side, size, price, usdc_size,
             timestamp, title, slug, icon, event_slug, outcome,
-            outcome_index, condition_id, asset
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            outcome_index, condition_id, asset, direction
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         trader_id, tx_hash,
         trade.get('side'), trade.get('size'), trade.get('price'),
@@ -131,7 +168,7 @@ def insert_trade(trader_id, trade, conn):
         trade.get('title'), trade.get('slug'), trade.get('icon'),
         trade.get('eventSlug'), trade.get('outcome'),
         trade.get('outcomeIndex'), trade.get('conditionId'),
-        trade.get('asset')
+        trade.get('asset'), direction
     ))
     conn.commit()
     return True

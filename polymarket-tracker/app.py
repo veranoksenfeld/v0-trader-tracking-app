@@ -271,6 +271,7 @@ def init_db():
             timestamp INTEGER, title TEXT, slug TEXT, icon TEXT,
             event_slug TEXT, outcome TEXT, outcome_index INTEGER,
             condition_id TEXT, asset TEXT,
+            direction TEXT DEFAULT 'UNKNOWN',
             fetched_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (trader_id) REFERENCES traders(id)
         )
@@ -299,6 +300,7 @@ def init_db():
             result TEXT DEFAULT 'OPEN',
             status TEXT,
             mock INTEGER DEFAULT 0,
+            end_date TEXT,
             executed_at TEXT,
             response TEXT,
             FOREIGN KEY (original_trade_id) REFERENCES trades(id)
@@ -332,6 +334,9 @@ def init_db():
             ('total_profit', 'REAL', '0'), ('win_rate', 'REAL', '0'),
             ('total_trades', 'INTEGER', '0'), ('volume_traded', 'REAL', '0')
         ]),
+        ('trades', [
+            ('direction', 'TEXT', "'UNKNOWN'"),
+        ]),
         ('copy_trades', [
             ('trader_name', 'TEXT', "''"), ('market_title', 'TEXT', "''"),
             ('market_slug', 'TEXT', "''"), ('event_slug', 'TEXT', "''"),
@@ -344,6 +349,7 @@ def init_db():
             ('closed', 'INTEGER', '0'), ('closed_at', 'TEXT', 'NULL'),
             ('result', 'TEXT', "'OPEN'"),
             ('mock', 'INTEGER', '0'),
+            ('end_date', 'TEXT', 'NULL'),
         ]),
     ]:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -737,12 +743,17 @@ def copy_trading_loop():
                 else:
                     success, response, our_size = execute_live_trade(client, trade, config)
 
+                # Fetch end_date for this market
+                end_date = ''
+                if trade.get('condition_id'):
+                    end_date = get_market_end_date(trade['condition_id'])
+
                 # Record in DB with market metadata
                 conn = get_db()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, executed_at, response)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, end_date, executed_at, response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     trade['id'], trader_name, market_title,
                     trade.get('slug', ''), trade.get('event_slug', ''),
@@ -752,6 +763,7 @@ def copy_trading_loop():
                     'SUCCESS' if success else 'FAILED',
                     1 if mock_mode else 0,
                     'OPEN' if side_str == 'BUY' else 'CLOSED',
+                    end_date,
                     datetime.now().isoformat(), response
                 ))
                 conn.commit()
@@ -790,11 +802,208 @@ def start_copy_engine():
     copy_engine['running'] = True
     copy_engine['thread'] = threading.Thread(target=copy_trading_loop, daemon=True)
     copy_engine['thread'].start()
+    # Start resolution checker in a separate thread
+    resolution_thread = threading.Thread(target=resolution_checker_loop, daemon=True)
+    resolution_thread.start()
 
 
 def stop_copy_engine():
     global copy_engine
     copy_engine['running'] = False
+
+
+# ============================================
+#  MARKET END DATE & RESOLUTION CHECKER
+# ============================================
+
+_market_end_date_cache = {}
+
+
+def get_market_end_date(condition_id):
+    """Fetch end date for a market from Gamma API. Cached."""
+    if condition_id in _market_end_date_cache:
+        return _market_end_date_cache[condition_id]
+    try:
+        resp = req.get(
+            'https://gamma-api.polymarket.com/markets',
+            params={'condition_id': condition_id, 'closed': 'false'},
+            timeout=10
+        )
+        if resp.status_code == 200:
+            markets = resp.json()
+            if markets and len(markets) > 0:
+                end_date = markets[0].get('endDate') or markets[0].get('end_date_iso') or ''
+                _market_end_date_cache[condition_id] = end_date
+                return end_date
+        # Try closed markets too
+        resp2 = req.get(
+            'https://gamma-api.polymarket.com/markets',
+            params={'condition_id': condition_id},
+            timeout=10
+        )
+        if resp2.status_code == 200:
+            markets2 = resp2.json()
+            if markets2 and len(markets2) > 0:
+                end_date = markets2[0].get('endDate') or markets2[0].get('end_date_iso') or ''
+                _market_end_date_cache[condition_id] = end_date
+                return end_date
+    except Exception as e:
+        log_event('ENGINE', 'WARN', 'End date fetch error', str(e))
+    return ''
+
+
+def check_resolved_markets():
+    """Check Gamma API for resolved markets and auto-close matching copy trades."""
+    conn = get_db()
+    cursor = conn.cursor()
+    # Get all OPEN copy trades with condition_ids
+    cursor.execute('''
+        SELECT DISTINCT condition_id FROM copy_trades
+        WHERE result = 'OPEN' AND status = 'SUCCESS'
+        AND condition_id IS NOT NULL AND condition_id != ''
+    ''')
+    open_cids = [row['condition_id'] for row in cursor.fetchall()]
+    conn.close()
+
+    if not open_cids:
+        return
+
+    for cid in open_cids:
+        try:
+            resp = req.get(
+                'https://gamma-api.polymarket.com/markets',
+                params={'condition_id': cid},
+                timeout=10
+            )
+            if resp.status_code != 200:
+                continue
+
+            markets = resp.json()
+            if not markets:
+                continue
+
+            market = markets[0]
+            resolved = market.get('resolved', False)
+            if not resolved:
+                continue
+
+            # Market is resolved - determine outcome
+            outcome_prices = market.get('outcomePrices', '')
+            winning_outcome = None
+            if outcome_prices:
+                try:
+                    prices = json.loads(outcome_prices) if isinstance(outcome_prices, str) else outcome_prices
+                    # The outcome with price 1.0 is the winner
+                    outcomes = market.get('outcomes', '')
+                    if outcomes:
+                        outcome_list = json.loads(outcomes) if isinstance(outcomes, str) else outcomes
+                        for i, p in enumerate(prices):
+                            if float(p) >= 0.99:
+                                winning_outcome = outcome_list[i] if i < len(outcome_list) else None
+                                break
+                except Exception:
+                    pass
+
+            # Close all OPEN trades for this condition_id
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, side, outcome, price, our_size FROM copy_trades
+                WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'
+            ''', (cid,))
+            open_trades = [dict(r) for r in cursor.fetchall()]
+
+            for trade in open_trades:
+                entry_price = float(trade.get('price') or 0)
+                our_size = float(trade.get('our_size') or 0)
+                trade_outcome = trade.get('outcome', '')
+                side = (trade.get('side') or '').upper()
+
+                # Determine final price based on resolution
+                if winning_outcome and trade_outcome:
+                    # If our trade's outcome matches the winning outcome, final price = 1.0
+                    final_price = 1.0 if trade_outcome.lower() == winning_outcome.lower() else 0.0
+                else:
+                    # Fallback: use first outcome price
+                    final_price = 0.5
+
+                # Calculate PnL
+                if side == 'BUY':
+                    pnl = (final_price - entry_price) * our_size
+                else:
+                    pnl = (entry_price - final_price) * our_size
+
+                pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
+                actual_result = 'WIN' if pnl >= 0 else 'LOSS'
+
+                cursor.execute('''
+                    UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?,
+                    current_price = ?, pnl = ?, pnl_pct = ?
+                    WHERE id = ?
+                ''', (datetime.now().isoformat(), actual_result, final_price,
+                      round(pnl, 4), round(pnl_pct, 2), trade['id']))
+
+                log_event('ENGINE', actual_result,
+                          f'Market resolved - auto-closed trade #{trade["id"]}',
+                          f'Outcome: {winning_outcome or "?"} | Entry: {entry_price:.2f} Final: {final_price:.2f} PnL: ${pnl:.2f}')
+
+            conn.commit()
+            conn.close()
+            time.sleep(0.5)  # Rate limit
+
+        except Exception as e:
+            log_event('ENGINE', 'WARN', f'Resolution check error for {cid[:20]}', str(e))
+
+
+def backfill_end_dates():
+    """Fetch end_date for OPEN copy trades that are missing it."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, condition_id FROM copy_trades
+            WHERE result = 'OPEN' AND status = 'SUCCESS'
+            AND (end_date IS NULL OR end_date = '')
+            AND condition_id IS NOT NULL AND condition_id != ''
+        ''')
+        rows = [dict(r) for r in cursor.fetchall()]
+        conn.close()
+        if not rows:
+            return
+
+        updated = 0
+        seen_cids = {}
+        for row in rows:
+            cid = row['condition_id']
+            if cid in seen_cids:
+                ed = seen_cids[cid]
+            else:
+                ed = get_market_end_date(cid)
+                seen_cids[cid] = ed
+                time.sleep(0.3)
+            if ed:
+                conn = get_db()
+                conn.execute('UPDATE copy_trades SET end_date = ? WHERE id = ?', (ed, row['id']))
+                conn.commit()
+                conn.close()
+                updated += 1
+        if updated > 0:
+            log_event('ENGINE', 'INFO', f'Backfilled end_date for {updated} open trade(s)')
+    except Exception as e:
+        log_event('ENGINE', 'WARN', 'End date backfill error', str(e))
+
+
+def resolution_checker_loop():
+    """Background thread that periodically checks for resolved markets."""
+    log_event('ENGINE', 'INFO', 'Market resolution checker started (every 30s)')
+    # Backfill end dates on first run
+    backfill_end_dates()
+    while copy_engine.get('running', False):
+        try:
+            check_resolved_markets()
+        except Exception as e:
+            log_event('ENGINE', 'WARN', 'Resolution checker error', str(e))
+        time.sleep(30)
 
 
 # ============================================
