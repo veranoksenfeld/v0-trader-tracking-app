@@ -530,38 +530,24 @@
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
     function betBadge(outcome, side, price) {
-        // Polymarket outcomes: "Yes"/"No", "Up"/"Down", or custom text
-        // side: "BUY" = entering position, "SELL" = exiting position
         const o=(outcome||'').trim(), oLow=o.toLowerCase(), s=(side||'').toUpperCase();
         if(!o && !s) return '<span class="bet-badge bet-unknown">--</span>';
 
-        // Determine if this is a bullish/positive outcome token
-        const positiveOutcomes = ['yes','up','over','higher','above','bull','long','true'];
-        const negativeOutcomes = ['no','down','under','lower','below','bear','short','false'];
-        const isPositiveToken = positiveOutcomes.includes(oLow);
-        const isNegativeToken = negativeOutcomes.includes(oLow);
+        // Simple rule: outcome determines color/arrow
+        // Up/Yes/Over/Higher = green arrow up
+        // Down/No/Under/Lower = red arrow down
+        const upOutcomes = ['yes','up','over','higher','above','bull','long','true'];
+        const isUp = upOutcomes.includes(oLow);
 
-        // Determine display direction:
-        // BUY a positive token (Yes/Up) = bullish
-        // SELL a positive token = exiting bullish (bearish action)
-        // BUY a negative token (No/Down) = bearish
-        // SELL a negative token = exiting bearish (bullish action)
-        let isBullish;
-        if(isPositiveToken) isBullish = s==='BUY';
-        else if(isNegativeToken) isBullish = s!=='BUY';
-        else isBullish = s==='BUY'; // unknown outcome, default by side
-
-        // Price in cents for the badge
-        const priceCents = price ? (parseFloat(price)*100).toFixed(0)+'c' : '';
-
-        // Use the actual outcome name as label (Up/Down/Yes/No)
-        const displayLabel = o || (isBullish ? 'YES' : 'NO');
-        const arrow = isBullish
+        const arrow = isUp
             ? '<span class="bet-arrow" style="color:var(--green);">&#9650;</span>'
             : '<span class="bet-arrow" style="color:var(--red);">&#9660;</span>';
-        const cls = isBullish ? 'bet-yes' : 'bet-no';
+        const cls = isUp ? 'bet-yes' : 'bet-no';
+        const displayLabel = o || (isUp ? 'UP' : 'DOWN');
+        const priceCents = price ? (parseFloat(price)*100).toFixed(0)+'c' : '';
         const priceHtml = priceCents ? `<span style="font-weight:400;font-size:10px;opacity:0.8;margin-left:3px;">${priceCents}</span>` : '';
-        return `<span class="bet-badge ${cls}">${arrow} ${displayLabel}${priceHtml}</span>`;
+        const sideLabel = s ? `<span style="font-weight:400;font-size:9px;opacity:0.6;margin-left:4px;">${s}</span>` : '';
+        return `<span class="bet-badge ${cls}">${arrow} ${displayLabel}${priceHtml}${sideLabel}</span>`;
     }
     function renderTrades() {
         const tbody=document.getElementById('trades-body'); let filtered=allTrades;

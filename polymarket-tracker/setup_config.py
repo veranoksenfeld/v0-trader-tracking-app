@@ -55,6 +55,9 @@ def setup():
 
     # Show current config
     if config.get('private_key'):
+        pk = config['private_key']
+        masked_pk = pk[:4] + '*' * (len(pk) - 8) + pk[-4:] if len(pk) > 8 else '***'
+        print(f"  Private key:     {masked_pk}")
         print(f"  Current wallet:  {config.get('funder_address', 'Not set')}")
         bal = get_usdc_balance(config.get('funder_address', ''))
         print(f"  USDC.e Balance:  ${bal:,.2f}")
