@@ -1095,7 +1095,23 @@ def get_trades():
         ''', (limit,))
     trades = [dict(row) for row in cursor.fetchall()]
     conn.close()
+
+    # Enrich trades with end_date from cache (non-blocking)
+    for t in trades:
+        cid = t.get('condition_id')
+        if cid and cid in _market_end_date_cache:
+            t['end_date'] = _market_end_date_cache[cid]
+        else:
+            t['end_date'] = ''
+
     return jsonify(trades)
+
+
+@app.route('/api/market-end-date/<condition_id>', methods=['GET'])
+def api_get_market_end_date(condition_id):
+    """Fetch and return the end date for a market by condition_id."""
+    ed = get_market_end_date(condition_id)
+    return jsonify({'condition_id': condition_id, 'end_date': ed})
 
 
 @app.route('/api/stats', methods=['GET'])
@@ -1471,6 +1487,13 @@ def stream():
                 new_trades = [dict(row) for row in cursor.fetchall()]
                 if new_trades:
                     last_trade_id = new_trades[-1]['id']
+                    # Enrich with end_date
+                    for nt in new_trades:
+                        cid = nt.get('condition_id')
+                        if cid and cid in _market_end_date_cache:
+                            nt['end_date'] = _market_end_date_cache[cid]
+                        else:
+                            nt['end_date'] = ''
                     yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
 
                 # New unified log entries
@@ -1508,8 +1531,26 @@ def stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
+def preload_end_date_cache():
+    """Load known end_dates from copy_trades into the in-memory cache at startup."""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT condition_id, end_date FROM copy_trades WHERE end_date IS NOT NULL AND end_date != '' AND condition_id IS NOT NULL AND condition_id != ''")
+        loaded = 0
+        for row in cursor.fetchall():
+            _market_end_date_cache[row['condition_id']] = row['end_date']
+            loaded += 1
+        conn.close()
+        if loaded:
+            print(f"  Preloaded {loaded} market end dates into cache")
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     init_db()
+    preload_end_date_cache()
     start_copy_engine()
     log_event('APP', 'INFO', 'Server started', f'CLOB: {"available" if CLOB_AVAILABLE else "not installed"}')
     print("=" * 60)
