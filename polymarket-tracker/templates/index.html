@@ -332,27 +332,29 @@
                     </div>
                 </div>
 
-                <!-- Copy Trades History with PnL -->
+                <!-- Copy Trading - Polymarket-style Positions + Activity -->
                 <div class="card" style="margin-top:16px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-                        <h3 style="margin-bottom:0;">Copy Trade History</h3>
-                        <div class="filter-buttons">
-                            <button class="filter-btn active" data-ctf="all" onclick="filterCopyTrades('all')">All</button>
-                            <button class="filter-btn" data-ctf="OPEN" onclick="filterCopyTrades('OPEN')">Open</button>
-                            <button class="filter-btn" data-ctf="WIN" onclick="filterCopyTrades('WIN')">Wins</button>
-                            <button class="filter-btn" data-ctf="LOSS" onclick="filterCopyTrades('LOSS')">Losses</button>
+                        <h3 style="margin-bottom:0;">Copy Trading</h3>
+                        <span id="closed-count" style="font-size:12px;color:var(--text-dim);"></span>
+                    </div>
+                    <div class="filter-buttons" style="margin-bottom:14px;">
+                        <button class="filter-btn active" data-cttab="positions" onclick="switchCopyTab('positions')">Positions</button>
+                        <button class="filter-btn" data-cttab="activity" onclick="switchCopyTab('activity')">Activity</button>
+                    </div>
+                    <!-- Positions tab -->
+                    <div id="cttab-positions" class="ptab-content">
+                        <div class="filter-buttons" style="margin-bottom:10px;">
+                            <button class="filter-btn active" data-ctpos="open" onclick="switchCopyPosTab('open')">Open</button>
+                            <button class="filter-btn" data-ctpos="closed" onclick="switchCopyPosTab('closed')">Closed</button>
                         </div>
+                        <div id="ctpos-open"><div class="empty-state"><p>No open positions</p></div></div>
+                        <div id="ctpos-closed" style="display:none;"><div class="empty-state"><p>No closed positions</p></div></div>
                     </div>
-                    <div id="copy-trades-content"><div class="empty-state"><p>No copy trades yet</p></div></div>
-                </div>
-
-                <!-- Closed Positions Summary -->
-                <div class="card" style="margin-top:16px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
-                        <h3 style="margin-bottom:0;">Closed Positions</h3>
-                        <span id="closed-count" style="font-size:12px;color:var(--text-dim);">0 positions</span>
+                    <!-- Activity tab -->
+                    <div id="cttab-activity" class="ptab-content" style="display:none;">
+                        <div id="copy-activity-content"><div class="empty-state"><p>No activity yet</p></div></div>
                     </div>
-                    <div id="closed-positions-content"><div class="empty-state"><p>No closed positions yet</p></div></div>
                 </div>
 
                 <!-- Recent Log -->
@@ -388,7 +390,7 @@
 </div>
 <div class="toast" id="toast"></div>
 <script>
-    let allTrades=[], allCopyTrades=[], currentFilter='all', ctFilter='all', selectedTraderId=null, currentDetail=null, config={}, logEntries=[], logSourceFilter='ALL';
+    let allTrades=[], allCopyTrades=[], currentFilter='all', selectedTraderId=null, currentDetail=null, config={}, logEntries=[], logSourceFilter='ALL';
 
     function formatTime(ts) { if(!ts)return'--'; const d=new Date(ts*1000),now=new Date(),diff=now-d; if(diff<60000)return'Just now'; if(diff<3600000)return Math.floor(diff/60000)+'m ago'; if(diff<86400000)return Math.floor(diff/3600000)+'h ago'; return d.toLocaleDateString('en-US',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
     function formatUSD(n) { if(!n)return'$0'; n=parseFloat(n); if(n>=1e6)return'$'+(n/1e6).toFixed(2)+'M'; if(n>=1e3)return'$'+(n/1e3).toFixed(1)+'K'; return'$'+n.toFixed(2); }
@@ -463,16 +465,13 @@
         try{
             const r=await fetch('/api/positions/'+w); const pos=await r.json();
             if(Array.isArray(pos)&&pos.length){
-                el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Avg</th><th>Current</th><th>P/L</th></tr></thead><tbody>${pos.map(p=>{
+                el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Outcome</th><th>Avg</th><th>Current</th></tr></thead><tbody>${pos.map(p=>{
                     const link=p.slug?'https://polymarket.com/event/'+p.slug:'#';
                     const iconHtml=p.icon?`<img src="${p.icon}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;margin-right:6px;" onerror="this.style.display='none'">`:'';
                     const avg=p.avgPrice?parseFloat(p.avgPrice):0;
                     const cur=p.curPrice?parseFloat(p.curPrice):0;
-                    const pnl=parseFloat(p.cashPnl||0);
-                    const pnlColor=pnl>=0?'var(--green)':'var(--red)';
-                    const pnlSign=pnl>=0?'+':'';
                     const outBadge=outcomeBadge(p.outcome,p.side||'BUY');
-                    return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(p.title||'Unknown').slice(0,60)}</a><div style="margin-top:2px;">${outBadge}</div></td><td style="color:var(--text-sec);font-weight:500;">${(avg*100).toFixed(1)}c</td><td style="font-weight:600;">${(cur*100).toFixed(1)}c</td><td style="color:${pnlColor};font-weight:700;">${pnlSign}$${Math.abs(pnl).toFixed(2)}</td></tr>`;
+                    return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(p.title||'Unknown').slice(0,60)}</a></td><td>${outBadge}</td><td style="color:var(--text-sec);font-weight:500;">${(avg*100).toFixed(1)}c</td><td style="font-weight:600;">${(cur*100).toFixed(1)}c</td></tr>`;
                 }).join('')}</tbody></table>`;
             } else el.innerHTML='<div class="empty-state"><p>No active positions</p></div>';
         } catch(e){el.innerHTML='<div class="empty-state"><p>Could not fetch positions</p></div>';}
@@ -483,19 +482,14 @@
             const r=await fetch('/api/positions/'+w+'/closed');
             const pos=await r.json();
             if(Array.isArray(pos)&&pos.length){
-                el.innerHTML=`<table class="activity-table"><thead><tr><th>Result</th><th>Market</th><th>Total Bet</th><th>Amount Won</th></tr></thead><tbody>${pos.map(p=>{
+                el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Outcome</th><th>Shares</th><th>Closed</th></tr></thead><tbody>${pos.map(p=>{
                     const link=p.slug?'https://polymarket.com/event/'+p.slug:'#';
                     const iconHtml=p.icon?`<img src="${p.icon}" style="width:20px;height:20px;border-radius:4px;vertical-align:middle;margin-right:6px;" onerror="this.style.display='none'">`:'';
-                    const pnl=parseFloat(p.cashPnl||p.realizedPnl||0);
-                    const initialVal=parseFloat(p.initialValue||0);
-                    const currentVal=parseFloat(p.currentValue||0);
-                    const totalBet=initialVal>0?initialVal:Math.abs(pnl);
-                    const amountWon=pnl>0?pnl+totalBet:Math.max(0,totalBet+pnl);
-                    const isWin=pnl>0;
-                    const resultLabel=pnl>0?'Won':'Lost';
-                    const resultColor=pnl>0?'var(--green)':'var(--red)';
-                    const resultBg=pnl>0?'rgba(34,197,94,0.12)':'rgba(239,68,68,0.12)';
-                    return `<tr><td><span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;background:${resultBg};color:${resultColor};">${resultLabel}</span></td><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(p.title||'Unknown').slice(0,55)}</a></td><td style="font-weight:500;">${formatUSD(totalBet)}</td><td style="color:${resultColor};font-weight:700;">${isWin?formatUSD(amountWon):'$0.00'}</td></tr>`;
+                    const outBadge=outcomeBadge(p.outcome,p.side||'BUY');
+                    const shares=parseFloat(p.size||0);
+                    const sharesStr=shares>0?shares.toFixed(1):'0';
+                    const endDate=p.endDate?new Date(p.endDate).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}):'Resolved';
+                    return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(p.title||'Unknown').slice(0,55)}</a></td><td>${outBadge}</td><td style="color:var(--text-sec);font-weight:500;">${sharesStr}</td><td style="color:var(--text-dim);font-size:11px;">${endDate}</td></tr>`;
                 }).join('')}</tbody></table>`;
             } else el.innerHTML='<div class="empty-state"><p>No closed positions</p></div>';
         }catch(e){el.innerHTML='<div class="empty-state"><p>Could not fetch closed positions</p></div>';}
@@ -633,78 +627,98 @@
         }).join('');
     }
 
-    // ---- Copy Trade History with PnL ----
+    // ---- Copy Trading: Positions + Activity (Polymarket style) ----
+    function switchCopyTab(tab) { document.querySelectorAll('[data-cttab]').forEach(b=>b.classList.toggle('active',b.dataset.cttab===tab)); document.getElementById('cttab-positions').style.display=tab==='positions'?'block':'none'; document.getElementById('cttab-activity').style.display=tab==='activity'?'block':'none'; }
+    function switchCopyPosTab(tab) { document.querySelectorAll('[data-ctpos]').forEach(b=>b.classList.toggle('active',b.dataset.ctpos===tab)); document.getElementById('ctpos-open').style.display=tab==='open'?'block':'none'; document.getElementById('ctpos-closed').style.display=tab==='closed'?'block':'none'; }
+
     async function fetchCopyTrades() {
-        try{const r=await fetch('/api/copy-trades'); allCopyTrades=await r.json(); renderCopyTrades(); renderClosedPositions(); fetchPnlSummary();}catch(e){}
+        try{const r=await fetch('/api/copy-trades'); allCopyTrades=await r.json(); renderOpenPositions(); renderClosedPositions(); renderCopyActivity(); fetchPnlSummary();}catch(e){}
     }
-    function filterCopyTrades(f) { ctFilter=f; document.querySelectorAll('[data-ctf]').forEach(b=>b.classList.toggle('active',b.dataset.ctf===f)); renderCopyTrades(); }
 
-
-    function renderCopyTrades() {
-        const el=document.getElementById('copy-trades-content');
-        let trades=allCopyTrades;
-        if(ctFilter!=='all')trades=allCopyTrades.filter(t=>(t.result||'OPEN')===ctFilter);
-        if(!trades.length){el.innerHTML='<div class="empty-state"><p>No '+(ctFilter!=='all'?ctFilter.toLowerCase()+' ':'')+'copy trades yet</p></div>';return;}
+    function renderOpenPositions() {
+        const el=document.getElementById('ctpos-open');
+        const open=allCopyTrades.filter(t=>t.result==='OPEN'&&t.status==='SUCCESS');
+        if(!open.length){el.innerHTML='<div class="empty-state"><p>No open positions</p></div>';return;}
+        // Group by condition_id (event)
+        const grouped={};
+        open.forEach(t=>{
+            const key=t.condition_id||t.market_title||t.id;
+            if(!grouped[key]) grouped[key]={market_title:t.market_title,icon:t.icon,outcome:t.outcome,market_slug:t.market_slug,event_slug:t.event_slug,trades:[],total_size:0,total_cost:0};
+            grouped[key].trades.push(t);
+            grouped[key].total_size+=parseFloat(t.our_size||0);
+            const price=parseFloat(t.price||0);
+            grouped[key].total_cost+=parseFloat(t.our_size||0)*price;
+        });
+        const entries=Object.values(grouped);
 
         const isMock=!!config.mock_mode;
-        const actionTh=isMock?'':'<th>Action</th>';
-
-        // Group trades by condition_id to show counts
-        const eventCounts={};
-        trades.forEach(t=>{
-            const key=t.condition_id||t.market_title||'';
-            if(!eventCounts[key])eventCounts[key]=0;
-            eventCounts[key]++;
-        });
-        const eventSeen={};
-
-        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Entry</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
-            const link=polyLink(t.market_slug,t.event_slug);
-            const resultCls=t.result==='WIN'?'result-win':t.result==='LOSS'?'result-loss':'result-open';
-            const pnlCls=t.pnl>0?'pnl-positive':t.pnl<0?'pnl-negative':'';
-            const pnlStr=t.pnl?((t.pnl>=0?'+':'')+parseFloat(t.pnl).toFixed(2)):'--';
-            const iconHtml=t.icon?`<img src="${t.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
-            const tier=tierClass(parseFloat(t.original_size||0));
-            const sideStr=(t.side||'').toUpperCase();
-            const tierBadge=sideStr==='SELL'?'<span class="tier-badge tier-SELL">SELL</span>':`<span class="tier-badge tier-${tier}">${tier}</span>`;
-
-            // Direction badge (OPEN/CLOSE/REDUCE)
-            const dirStr=sideStr==='BUY'?'OPEN':'CLOSE';
-            const dirBadge=`<span class="dir-badge dir-${dirStr}">${dirStr}</span>`;
-
-            // Position status
-            const isClosed=t.closed||t.result==='WIN'||t.result==='LOSS';
-            const statusHtml=isClosed
-                ?'<span style="color:var(--text-dim);font-size:11px;font-weight:500;">Closed</span>'
-                :'<span style="color:var(--green);font-size:11px;font-weight:600;">Active</span>';
-
-            // Action column
-            let actionTd='';
-            if(!isMock){
-                const closeBtn=t.result==='OPEN'&&t.status==='SUCCESS'?`<button class="btn btn-sm btn-success" style="padding:3px 8px;font-size:10px;margin-right:3px;" onclick="closeTrade(${t.id},1)" title="Mark as Win">W</button><button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:10px;" onclick="closeTrade(${t.id},0)" title="Mark as Loss">L</button>`:(t.result!=='OPEN'?`<span style="font-size:10px;color:var(--text-dim);">${t.closed_at?new Date(t.closed_at).toLocaleDateString():''}</span>`:'');
-                actionTd=`<td>${closeBtn}</td>`;
-            }
-
-            // Same event count badge
-            const evKey=t.condition_id||t.market_title||'';
-            const evCount=eventCounts[evKey]||1;
-            let countBadge='';
-            if(evCount>1){
-                if(!eventSeen[evKey]){
-                    eventSeen[evKey]=true;
-                    countBadge=`<span style="display:inline-block;background:rgba(99,102,241,0.15);color:var(--accent);font-size:9px;font-weight:700;padding:1px 5px;border-radius:3px;margin-left:4px;">+${evCount}</span>`;
-                }
-            }
-
-            const ctSideBadge=sideStr==='BUY'?'<span class="side-buy-badge">BUY</span>':sideStr==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideStr||'--'}</span>`;
-            const ctOutcome=outcomeBadge(t.outcome,t.side);
-            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${ctOutcome}</td><td>${ctSideBadge}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
+        el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Outcome</th><th>Avg</th><th>Size</th><th>Mode</th>${isMock?'':'<th></th>'}</tr></thead><tbody>${entries.map(g=>{
+            const link=polyLink(g.market_slug,g.event_slug);
+            const iconHtml=g.icon?`<img src="${g.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
+            const outBadge=outcomeBadge(g.outcome,g.trades[0]?.side||'BUY');
+            const avgPrice=g.total_size>0?(g.total_cost/g.total_size):0;
+            const avgStr=(avgPrice*100).toFixed(1)+'c';
+            const isTradeMock=g.trades[0]?.mock;
+            const modeBadge=isTradeMock?'<span style="color:var(--orange);font-size:11px;font-weight:600;">MOCK</span>':'<span style="color:var(--green);font-size:11px;font-weight:600;">LIVE</span>';
+            const actionHtml=isMock?'':`<td>${g.trades.filter(t=>t.result==='OPEN').map(t=>`<button class="btn btn-sm btn-success" style="padding:2px 6px;font-size:9px;margin-right:2px;" onclick="closeTrade(${t.id},1)" title="Win">W</button><button class="btn btn-sm btn-danger" style="padding:2px 6px;font-size:9px;" onclick="closeTrade(${t.id},0)" title="Loss">L</button>`).join(' ')}</td>`;
+            return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td>${outBadge}</td><td style="color:var(--text-sec);font-weight:500;">${avgStr}</td><td style="font-weight:600;">${formatUSD(g.total_size)}</td><td>${modeBadge}</td>${actionHtml}</tr>`;
         }).join('')}</tbody></table>`;
-        // Auto-fetch missing end dates
     }
+
+    function renderClosedPositions() {
+        const el=document.getElementById('ctpos-closed');
+        const closed=allCopyTrades.filter(t=>t.result==='WIN'||t.result==='LOSS');
+        const countEl=document.getElementById('closed-count');
+        const openCount=allCopyTrades.filter(t=>t.result==='OPEN'&&t.status==='SUCCESS').length;
+        const closedCount=closed.length;
+        countEl.textContent=openCount+' open, '+closedCount+' closed';
+        if(!closed.length){el.innerHTML='<div class="empty-state"><p>No closed positions</p></div>';return;}
+        // Group by condition_id
+        const grouped={};
+        closed.forEach(t=>{
+            const key=t.condition_id||t.market_title||t.id;
+            if(!grouped[key]) grouped[key]={market_title:t.market_title,icon:t.icon,outcome:t.outcome,market_slug:t.market_slug,event_slug:t.event_slug,trades:[],total_size:0};
+            grouped[key].trades.push(t);
+            grouped[key].total_size+=parseFloat(t.our_size||0);
+        });
+        const entries=Object.values(grouped).sort((a,b)=>{
+            const lastA=Math.max(...a.trades.map(t=>new Date(t.closed_at||0).getTime()));
+            const lastB=Math.max(...b.trades.map(t=>new Date(t.closed_at||0).getTime()));
+            return lastB-lastA;
+        });
+        el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Outcome</th><th>Size</th><th>Closed</th></tr></thead><tbody>${entries.map(g=>{
+            const link=polyLink(g.market_slug,g.event_slug);
+            const iconHtml=g.icon?`<img src="${g.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
+            const outBadge=outcomeBadge(g.outcome,g.trades[0]?.side||'BUY');
+            const lastClosed=g.trades.reduce((latest,t)=>{const d=new Date(t.closed_at||0);return d>latest?d:latest;},new Date(0));
+            const closedStr=lastClosed.getTime()>0?lastClosed.toLocaleDateString('en-US',{month:'short',day:'numeric'}):'--';
+            return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td>${outBadge}</td><td style="font-weight:500;">${formatUSD(g.total_size)}</td><td style="color:var(--text-dim);font-size:11px;">${closedStr}</td></tr>`;
+        }).join('')}</tbody></table>`;
+    }
+
+    function renderCopyActivity() {
+        const el=document.getElementById('copy-activity-content');
+        if(!allCopyTrades.length){el.innerHTML='<div class="empty-state"><p>No activity yet</p></div>';return;}
+        // Show ALL bids/trades chronologically (newest first)
+        const sorted=[...allCopyTrades].sort((a,b)=>{
+            const tA=new Date(a.executed_at||0).getTime();
+            const tB=new Date(b.executed_at||0).getTime();
+            return tB-tA;
+        });
+        el.innerHTML=`<table class="activity-table"><thead><tr><th>Type</th><th>Market</th><th>Amount</th></tr></thead><tbody>${sorted.map(t=>{
+            const link=polyLink(t.market_slug,t.event_slug);
+            const sideStr=(t.side||'').toUpperCase();
+            const typeBadge=sideStr==='BUY'?'<span class="side-buy-badge">BUY</span>':sideStr==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideStr||'--'}</span>`;
+            const iconHtml=t.icon?`<img src="${t.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
+            const ts=t.executed_at?new Date(t.executed_at).toLocaleString():'--';
+            const modeTag=t.mock?'<span style="color:var(--orange);font-size:9px;font-weight:600;margin-left:4px;">MOCK</span>':'';
+            return `<tr><td>${typeBadge}</td><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-size:12px;">${(t.market_title||'Unknown').slice(0,55)}</a>${modeTag}<span style="display:block;font-size:10px;color:var(--text-dim);margin-top:1px;">${ts}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td></tr>`;
+        }).join('')}</tbody></table>`;
+    }
+
     async function closeTrade(id, isWin) {
         const price = isWin ? 1 : 0;
-        try{const r=await fetch('/api/copy-trades/'+id+'/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({result:isWin?'WIN':'LOSS',current_price:price})}); const res=await r.json(); if(r.ok){showToast(`Trade closed as ${isWin?'WIN':'LOSS'}: $${res.pnl?.toFixed(2)||'0'} PnL`,isWin?'success':'error');fetchCopyTrades();}else showToast(res.error||'Error','error');}catch(e){showToast('Error closing trade','error');}
+        try{const r=await fetch('/api/copy-trades/'+id+'/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({result:isWin?'WIN':'LOSS',current_price:price})}); const res=await r.json(); if(r.ok){showToast(`Trade closed as ${isWin?'WIN':'LOSS'}`,isWin?'success':'error');fetchCopyTrades();}else showToast(res.error||'Error','error');}catch(e){showToast('Error closing trade','error');}
     }
     async function fetchPnlSummary() {
         try{const r=await fetch('/api/copy-trades/summary'); const s=await r.json();
@@ -718,43 +732,6 @@
         document.getElementById('pnl-winrate').style.color=wrColor(s.win_rate||0);
         const mpe=config.max_trades_per_event||0; document.getElementById('pnl-max-per-event').textContent=mpe>0?mpe:'--';
         }catch(e){}
-    }
-
-    // ---- Closed Positions ----
-    function renderClosedPositions() {
-        const el=document.getElementById('closed-positions-content');
-        const closed=allCopyTrades.filter(t=>t.result==='WIN'||t.result==='LOSS');
-        document.getElementById('closed-count').textContent=closed.length+' position'+(closed.length!==1?'s':'');
-        if(!closed.length){el.innerHTML='<div class="empty-state"><p>No closed positions yet</p></div>';return;}
-
-        // Group by market (condition_id)
-        const grouped={};
-        closed.forEach(t=>{
-            const key=t.condition_id||t.market_title||t.id;
-            if(!grouped[key]) grouped[key]={market_title:t.market_title,icon:t.icon,outcome:t.outcome,market_slug:t.market_slug,event_slug:t.event_slug,trades:[],total_bet:0,total_pnl:0,wins:0,losses:0};
-            grouped[key].trades.push(t);
-            grouped[key].total_bet+=parseFloat(t.our_size||0);
-            grouped[key].total_pnl+=parseFloat(t.pnl||0);
-            if(t.result==='WIN') grouped[key].wins++;
-            else grouped[key].losses++;
-        });
-
-        const entries=Object.values(grouped).sort((a,b)=>{
-            const lastA=Math.max(...a.trades.map(t=>new Date(t.closed_at||0).getTime()));
-            const lastB=Math.max(...b.trades.map(t=>new Date(t.closed_at||0).getTime()));
-            return lastB-lastA;
-        });
-
-        el.innerHTML=`<table class="activity-table"><thead><tr><th>Result</th><th>Market</th><th>Total Bet</th><th>Amount Won</th></tr></thead><tbody>${entries.map(g=>{
-            const link=polyLink(g.market_slug,g.event_slug);
-            const iconHtml=g.icon?`<img src="${g.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
-            const isWin=g.total_pnl>0;
-            const resultLabel=isWin?'Won':'Lost';
-            const resultColor=isWin?'var(--green)':'var(--red)';
-            const resultBg=isWin?'rgba(34,197,94,0.12)':'rgba(239,68,68,0.12)';
-            const amountWon=isWin?g.total_pnl+g.total_bet:0;
-            return `<tr><td><span style="display:inline-block;padding:3px 10px;border-radius:5px;font-size:11px;font-weight:700;background:${resultBg};color:${resultColor};">${resultLabel}</span></td><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td style="font-weight:500;">${formatUSD(g.total_bet)}</td><td style="color:${resultColor};font-weight:700;">${isWin?formatUSD(amountWon):'$0.00'}</td></tr>`;
-        }).join('')}</tbody></table>`;
     }
 
     // ---- System Logs ----
