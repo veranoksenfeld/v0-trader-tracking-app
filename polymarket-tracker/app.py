@@ -1682,8 +1682,7 @@ def stream():
                 new_trades = [dict(row) for row in cursor.fetchall()]
                 if new_trades:
                     last_trade_id = new_trades[-1]['id']
-                            # end_date is already in the DB/query result
-                            yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
+                    yield f"data: {json.dumps({'type': 'new_trades', 'trades': new_trades})}\n\n"
 
                 # New unified log entries
                 try:
