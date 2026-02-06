@@ -280,6 +280,44 @@
                     </div>
                 </div>
 
+                <!-- Frontrunning & Mempool Settings (from repo) -->
+                <div class="grid-2">
+                    <div class="card">
+                        <h3>Frontrunning & Mempool</h3>
+                        <div class="toggle-row mock-row" style="margin-bottom:10px;">
+                            <div class="info"><h4>Frontrun Mode</h4><p>Priority execution with gas multiplier</p></div>
+                            <div class="toggle" id="frontrun-toggle" onclick="toggleFrontrun()"></div>
+                        </div>
+                        <div class="status-row"><span class="label">Mempool</span><span class="value" id="mempool-status"><span class="dot off"></span>Off</span></div>
+                        <div class="status-row"><span class="label">Frontrun Size %</span><span class="value"><input class="config-input" id="frontrun-mult-input" type="number" min="0.01" max="2" step="0.05" value="0.5" onchange="updateFrontrunConfig()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">of target</span></span></div>
+                        <div class="status-row"><span class="label">Gas Multiplier</span><span class="value"><input class="config-input" id="gas-mult-input" type="number" min="1" max="5" step="0.1" value="1.2" onchange="updateFrontrunConfig()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">x</span></span></div>
+                        <div class="status-row"><span class="label">Min Trade USD</span><span class="value">$<input class="config-input" id="min-trade-usd-input" type="number" min="0" step="10" value="100" onchange="updateFrontrunConfig()"></span></div>
+                        <div class="status-row"><span class="label">Retry Limit</span><span class="value"><input class="config-input" id="retry-limit-input" type="number" min="0" max="10" value="3" onchange="updateFrontrunConfig()"></span></div>
+                        <div class="status-row"><span class="label">Gas Price</span><span class="value" style="color:var(--text-dim);" id="gas-price-display">-- Gwei</span></div>
+                        <div class="status-row"><span class="label">Pending Txns</span><span class="value" style="color:var(--accent);" id="pending-txns-display">0</span></div>
+                        <div class="status-row"><span class="label">Frontrun OK/Fail</span><span class="value"><span style="color:var(--green);" id="frontrun-ok">0</span> / <span style="color:var(--red);" id="frontrun-fail">0</span></span></div>
+                    </div>
+                    <div class="card">
+                        <h3>Trade Aggregation & Targets</h3>
+                        <div class="toggle-row mock-row" style="margin-bottom:10px;">
+                            <div class="info"><h4>Aggregation</h4><p>Bundle trades within time window</p></div>
+                            <div class="toggle" id="agg-toggle" onclick="toggleAggregation()"></div>
+                        </div>
+                        <div class="status-row"><span class="label">Window</span><span class="value"><input class="config-input" id="agg-window-input" type="number" min="10" max="3600" step="10" value="300" onchange="updateAggConfig()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">sec</span></span></div>
+                        <div class="status-row"><span class="label">Fetch Interval</span><span class="value"><input class="config-input" id="fetch-interval-input" type="number" min="0.5" max="60" step="0.5" value="1" onchange="updateAggConfig()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">sec</span></span></div>
+                        <div style="margin-top:10px;">
+                            <div class="status-row"><span class="label" style="font-weight:600;">Target Addresses</span><span class="value" style="font-size:11px;color:var(--text-dim);" id="target-addr-count">0 targets</span></div>
+                            <textarea id="target-addresses-input" style="width:100%;min-height:60px;background:var(--bg-input);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:monospace;font-size:11px;padding:8px;margin-top:6px;resize:vertical;" placeholder="0xabc...,0xdef... (comma-separated)" onchange="updateTargetAddresses()"></textarea>
+                        </div>
+                        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+                            <button class="action-button" onclick="checkAllowance()" style="font-size:11px;padding:5px 10px;">Check Allowance</button>
+                            <button class="action-button" onclick="validateBalances()" style="font-size:11px;padding:5px 10px;">Validate Balances</button>
+                            <button class="action-button" onclick="simulateTrade()" style="font-size:11px;padding:5px 10px;">Simulate Trade</button>
+                        </div>
+                        <div id="tool-output" style="margin-top:8px;font-size:11px;color:var(--text-dim);max-height:120px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;background:var(--bg-input);padding:6px 8px;border-radius:6px;display:none;"></div>
+                    </div>
+                </div>
+
                 <!-- Target Detail -->
                 <div class="card" id="target-detail" style="display:none;">
                     <h3>Target Wallet Details</h3>
@@ -561,6 +599,74 @@
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trades_per_event:v})});config.max_trades_per_event=v;showToast(v>0?'Max per event: '+v:'Max per event: unlimited','success');}catch(e){}
     }
 
+    // ---- Frontrunning & Mempool config functions ----
+    async function toggleFrontrun() {
+        const next=!config.frontrun_enabled;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({frontrun_enabled:next})});config.frontrun_enabled=next;document.getElementById('frontrun-toggle').classList.toggle('active',next);showToast(next?'Frontrun mode ON':'Frontrun mode OFF',next?'success':'info');}catch(e){showToast('Error','error');}
+    }
+    async function updateFrontrunConfig() {
+        const data={
+            frontrun_size_multiplier:parseFloat(document.getElementById('frontrun-mult-input').value)||0.5,
+            gas_price_multiplier:parseFloat(document.getElementById('gas-mult-input').value)||1.2,
+            min_trade_size_usd:parseFloat(document.getElementById('min-trade-usd-input').value)||100,
+            retry_limit:parseInt(document.getElementById('retry-limit-input').value)||3,
+        };
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});showToast('Frontrun config saved','success');}catch(e){}
+    }
+    async function toggleAggregation() {
+        const next=!config.trade_aggregation_enabled;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trade_aggregation_enabled:next})});config.trade_aggregation_enabled=next;document.getElementById('agg-toggle').classList.toggle('active',next);showToast(next?'Aggregation ON':'Aggregation OFF','success');}catch(e){}
+    }
+    async function updateAggConfig() {
+        const data={
+            trade_aggregation_window_seconds:parseInt(document.getElementById('agg-window-input').value)||300,
+            fetch_interval:parseFloat(document.getElementById('fetch-interval-input').value)||1,
+        };
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});showToast('Aggregation config saved','success');}catch(e){}
+    }
+    async function updateTargetAddresses() {
+        const v=document.getElementById('target-addresses-input').value.trim();
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target_addresses:v})});
+        const cnt=v?v.split(',').filter(a=>a.trim()).length:0;
+        document.getElementById('target-addr-count').textContent=cnt+' target'+(cnt!==1?'s':'');
+        showToast('Target addresses updated ('+cnt+')','success');}catch(e){}
+    }
+    async function checkAllowance() {
+        const out=document.getElementById('tool-output');out.style.display='block';out.textContent='Checking allowance...';
+        try{const r=await fetch('/api/check-allowance');const d=await r.json();
+        if(d.error){out.textContent='Error: '+d.error;return;}
+        out.textContent=`USDC.e Allowance Check\n`+
+            `Wallet: ${d.funder_address}\n`+
+            `CTF Exchange: $${d.ctf_exchange_allowance.toLocaleString()}\n`+
+            `NegRisk Exchange: $${d.neg_risk_exchange_allowance.toLocaleString()}\n`+
+            `Status: ${d.sufficient?'SUFFICIENT':'INSUFFICIENT - need >= $1,000'}`;
+        }catch(e){out.textContent='Error: '+e.message;}
+    }
+    async function validateBalances() {
+        const out=document.getElementById('tool-output');out.style.display='block';out.textContent='Validating balances...';
+        try{const r=await fetch('/api/validate-balances');const d=await r.json();
+        out.textContent=`Balance Validation\n`+
+            `USDC.e: $${d.usdc_balance}\n`+
+            `POL: ${d.pol_balance}\n`+
+            `Gas Price: ${d.gas_price_gwei} Gwei\n`+
+            `Status: ${d.valid?'READY TO TRADE':'NOT READY'}\n`+
+            `Message: ${d.message}`;
+        }catch(e){out.textContent='Error: '+e.message;}
+    }
+    async function simulateTrade() {
+        const out=document.getElementById('tool-output');out.style.display='block';out.textContent='Running simulation...';
+        try{const r=await fetch('/api/simulate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({trade_size_usd:100,side:'BUY',price:0.5})});const d=await r.json();
+        out.textContent=`Trade Simulation (BUY $100 @ 50c)\n`+
+            `Strategy: ${d.strategy}\n`+
+            `Copy Size: $${d.copy_size_before_tier} -> $${d.final_copy_size} [${d.tier}]\n`+
+            `Frontrun: ${d.frontrun_enabled?'$'+d.frontrun_size:'Disabled'}\n`+
+            `Gas: ${d.gas_price_gwei} Gwei (priority: ${d.priority_gas_gwei} Gwei)\n`+
+            `Est Gas Cost: ${d.estimated_gas_cost_pol} POL\n`+
+            `Balance: ${d.balance_valid?'OK':'FAIL'} | USDC $${d.usdc_balance} POL ${d.pol_balance}\n`+
+            `Retries: ${d.retry_limit} | Aggregation: ${d.aggregation_enabled?'ON':'OFF'}\n`+
+            `Would Execute: ${d.would_execute?'YES':'NO'}`;
+        }catch(e){out.textContent='Error: '+e.message;}
+    }
     function updateStatus() {
         const el=document.getElementById('engine-status-text'), badge=document.getElementById('engine-badge'), dot=document.getElementById('engine-dot'), label=document.getElementById('engine-label');
         if(config.engine_running){if(config.has_credentials||config.mock_mode){el.innerHTML='<span class="dot on"></span>Running'+(config.mock_mode?' (Mock)':'');badge.classList.remove('off');badge.classList.add('on');dot.style.background='var(--green)';label.textContent='Engine Running';}else{el.innerHTML='<span class="dot warn"></span>Waiting for wallet';dot.style.background='var(--yellow)';label.textContent='Waiting';}}else{el.innerHTML='<span class="dot off"></span>Stopped';badge.classList.remove('on');badge.classList.add('off');dot.style.background='var(--red)';label.textContent='Engine Off';}
@@ -584,6 +690,25 @@
         document.getElementById('strategy-select').value=config.copy_strategy||'PERCENTAGE';
         document.getElementById('prob-toggle').classList.toggle('active',!!config.prob_sizing_enabled);
         toggleStrategyFields(config.copy_strategy||'PERCENTAGE');
+        // Frontrunning & Mempool fields
+        document.getElementById('frontrun-toggle').classList.toggle('active',!!config.frontrun_enabled);
+        document.getElementById('frontrun-mult-input').value=config.frontrun_size_multiplier||0.5;
+        document.getElementById('gas-mult-input').value=config.gas_price_multiplier||1.2;
+        document.getElementById('min-trade-usd-input').value=config.min_trade_size_usd||100;
+        document.getElementById('retry-limit-input').value=config.retry_limit||3;
+        document.getElementById('gas-price-display').textContent=(config.current_gas_gwei||'--')+' Gwei';
+        document.getElementById('pending-txns-display').textContent=config.mempool_pending_seen||0;
+        document.getElementById('frontrun-ok').textContent=config.mempool_frontrun_successes||0;
+        document.getElementById('frontrun-fail').textContent=(config.mempool_frontrun_attempts||0)-(config.mempool_frontrun_successes||0);
+        const mempoolEl=document.getElementById('mempool-status');
+        if(config.mempool_running){mempoolEl.innerHTML='<span class="dot on"></span>Monitoring';}else if(config.blocknative_configured){mempoolEl.innerHTML='<span class="dot warn"></span>Ready';}else{mempoolEl.innerHTML='<span class="dot off"></span>Not configured';}
+        // Aggregation fields
+        document.getElementById('agg-toggle').classList.toggle('active',!!config.trade_aggregation_enabled);
+        document.getElementById('agg-window-input').value=config.trade_aggregation_window_seconds||300;
+        document.getElementById('fetch-interval-input').value=config.fetch_interval||1;
+        document.getElementById('target-addresses-input').value=config.target_addresses||'';
+        const tAddrCount=config.target_addresses?config.target_addresses.split(',').filter(a=>a.trim()).length:0;
+        document.getElementById('target-addr-count').textContent=tAddrCount+' target'+(tAddrCount!==1?'s':'');
         updateStatus();updateMockUI();renderWallet();}catch(e){}
     }
     function renderWallet() {
@@ -592,7 +717,9 @@
             banner.style.display='none';
             const bal=config.usdc_balance!==null&&config.usdc_balance!==undefined?'$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'Loading...';
             if(config.usdc_balance!==null&&config.usdc_balance!==undefined){document.getElementById('header-balance-amount').textContent='$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});document.getElementById('header-balance').style.display='flex';}
-            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${truncAddr(config.funder_address)}</span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>`;
+            const polBal=config.pol_balance!==null&&config.pol_balance!==undefined?config.pol_balance.toFixed(4)+' POL':'--';
+            const polColor=config.pol_balance!==null&&config.pol_balance>=0.02?'var(--green)':'var(--red)';
+            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${truncAddr(config.funder_address)}</span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div><div class="status-row"><span class="label">POL Balance</span><span class="value" style="color:${polColor};">${polBal}</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>`;
         } else if(config.mock_mode) {
             banner.style.display='none';document.getElementById('header-balance').style.display='none';
             el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value" style="color:var(--orange);"><span class="dot warn"></span>Mock Mode</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="color:var(--text-dim);">Not required</span></div><div class="status-row"><span class="label">Balance</span><span class="value" style="color:var(--text-dim);">Simulated</span></div>`;

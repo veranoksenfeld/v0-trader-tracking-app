@@ -51,6 +51,29 @@ copy_engine = {
     'trades_failed': 0,
 }
 
+# ---- Mempool Monitor State (from MempoolMonitorService) ----
+mempool_monitor = {
+    'running': False,
+    'thread': None,
+    'pending_txns_seen': 0,
+    'frontrun_attempts': 0,
+    'frontrun_successes': 0,
+    'last_pending_tx': None,
+}
+
+# Default frontrunning / mempool config values (from repo's .env.example)
+DEFAULT_FRONTRUN_CONFIG = {
+    'frontrun_enabled': False,
+    'frontrun_size_multiplier': 0.5,  # 50% of target trade size
+    'gas_price_multiplier': 1.2,       # 20% higher gas for priority
+    'min_trade_size_usd': 100,         # Minimum trade size to frontrun
+    'retry_limit': 3,                  # Max retry attempts
+    'fetch_interval': 1,               # Polling interval (seconds)
+    'trade_aggregation_enabled': False,
+    'trade_aggregation_window_seconds': 300,  # 5 min window
+    'target_addresses': '',            # Comma-separated addresses to frontrun
+}
+
 
 # ============================================
 #  EXECUTION TIERS (from Rust config/mod.rs)
@@ -263,6 +286,24 @@ def log_event(source, level, message, details=''):
         pass
 
 
+POLYGON_RPCS = ['https://polygon-rpc.com', 'https://rpc.ankr.com/polygon', 'https://polygon.llamarpc.com']
+
+
+def _polygon_rpc(method, params):
+    """Make a JSON-RPC call to a free public Polygon RPC."""
+    payload = {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}
+    for rpc in POLYGON_RPCS:
+        try:
+            r = req.post(rpc, json=payload, timeout=15)
+            r.raise_for_status()
+            result = r.json()
+            if 'result' in result:
+                return result['result']
+        except Exception:
+            continue
+    return None
+
+
 def get_usdc_balance(funder_address):
     """Get USDC.e balance directly from Polygon RPC"""
     if not funder_address:
@@ -270,15 +311,136 @@ def get_usdc_balance(funder_address):
     USDC_E = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
     padded = funder_address.replace('0x', '').lower().zfill(64)
     call_data = '0x70a08231' + padded
-    for rpc in ['https://polygon-rpc.com', 'https://rpc.ankr.com/polygon', 'https://polygon.llamarpc.com']:
-        try:
-            resp = req.post(rpc, json={'jsonrpc': '2.0', 'method': 'eth_call', 'params': [{'to': USDC_E, 'data': call_data}, 'latest'], 'id': 1}, timeout=10)
-            result = resp.json()
-            if 'result' in result and result['result'] != '0x':
-                return int(result['result'], 16) / 1e6
-        except Exception:
-            continue
+    result = _polygon_rpc('eth_call', [{'to': USDC_E, 'data': call_data}, 'latest'])
+    if result and result != '0x':
+        return int(result, 16) / 1e6
     return 0
+
+
+def get_pol_balance(address):
+    """Get native POL/MATIC balance from Polygon RPC (for gas fee checks)."""
+    if not address:
+        return 0
+    result = _polygon_rpc('eth_getBalance', [address.lower(), 'latest'])
+    if result:
+        return int(result, 16) / 1e18
+    return 0
+
+
+def get_gas_price():
+    """Get current gas price from Polygon RPC (in Gwei)."""
+    result = _polygon_rpc('eth_gasPrice', [])
+    if result:
+        return int(result, 16) / 1e9  # Convert Wei to Gwei
+    return 30.0  # Default fallback
+
+
+def validate_balances(config):
+    """
+    Validate that wallet has sufficient USDC and POL balances for trading.
+    Returns (is_valid, usdc_balance, pol_balance, message).
+    From TradeExecutorService: balance validation before execution.
+    """
+    funder = config.get('funder_address', '')
+    if not funder:
+        return False, 0, 0, 'No funder address configured'
+
+    usdc = get_usdc_balance(funder)
+    pol = get_pol_balance(funder)
+
+    min_usdc = config.get('min_trade_size', 10)
+    min_pol = 0.02  # Minimum ~0.02 POL for gas
+
+    messages = []
+    if usdc < min_usdc:
+        messages.append(f'Low USDC: ${usdc:.2f} (need >= ${min_usdc:.2f})')
+    if pol < min_pol:
+        messages.append(f'Low POL: {pol:.4f} (need >= {min_pol} for gas)')
+
+    is_valid = usdc >= min_usdc and pol >= min_pol
+    msg = ' | '.join(messages) if messages else 'Balances OK'
+    return is_valid, usdc, pol, msg
+
+
+def get_usdc_allowance(funder_address, spender='0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'):
+    """Check USDC.e allowance for the Polymarket CTF Exchange contract."""
+    if not funder_address:
+        return 0
+    USDC_E = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
+    owner_padded = funder_address.replace('0x', '').lower().zfill(64)
+    spender_padded = spender.replace('0x', '').lower().zfill(64)
+    # allowance(address,address) selector = 0xdd62ed3e
+    call_data = '0xdd62ed3e' + owner_padded + spender_padded
+    result = _polygon_rpc('eth_call', [{'to': USDC_E, 'data': call_data}, 'latest'])
+    if result and result != '0x':
+        return int(result, 16) / 1e6
+    return 0
+
+
+# ============================================
+#  TRADE AGGREGATION (from repo config)
+# ============================================
+
+_aggregation_buffer = {}  # key: (condition_id, side) -> {'trades': [...], 'window_start': timestamp}
+_agg_lock = threading.Lock()
+
+
+def aggregate_trade(trade, config):
+    """
+    Optionally aggregate trades within a time window before executing.
+    Returns (should_execute_now, aggregated_trade_or_none).
+    From repo: TRADE_AGGREGATION_ENABLED + TRADE_AGGREGATION_WINDOW_SECONDS.
+    """
+    if not config.get('trade_aggregation_enabled', False):
+        return True, trade
+
+    window_secs = config.get('trade_aggregation_window_seconds', 300)
+    cid = trade.get('condition_id', '')
+    side = (trade.get('side') or '').upper()
+    key = (cid, side)
+    now = time.time()
+
+    with _agg_lock:
+        if key not in _aggregation_buffer:
+            _aggregation_buffer[key] = {'trades': [trade], 'window_start': now}
+            return False, None  # Buffer and wait
+
+        buf = _aggregation_buffer[key]
+        buf['trades'].append(trade)
+
+        # Check if window has expired
+        if now - buf['window_start'] >= window_secs:
+            # Aggregate: sum sizes, average price
+            agg_trade = dict(trade)  # Use last trade as base
+            total_usdc = sum(float(t.get('usdc_size') or 0) for t in buf['trades'])
+            total_size = sum(float(t.get('size') or 0) for t in buf['trades'])
+            prices = [float(t.get('price') or 0) for t in buf['trades'] if t.get('price')]
+            avg_price = sum(prices) / len(prices) if prices else 0
+
+            agg_trade['usdc_size'] = total_usdc
+            agg_trade['size'] = total_size
+            agg_trade['price'] = avg_price
+            agg_trade['_aggregated_count'] = len(buf['trades'])
+
+            del _aggregation_buffer[key]
+            return True, agg_trade
+
+        return False, None  # Still within window
+
+
+def flush_aggregation_buffers():
+    """Force-flush all aggregation buffers (e.g., on shutdown)."""
+    results = []
+    with _agg_lock:
+        for key, buf in list(_aggregation_buffer.items()):
+            if buf['trades']:
+                trade = buf['trades'][-1]
+                total_usdc = sum(float(t.get('usdc_size') or 0) for t in buf['trades'])
+                trade['usdc_size'] = total_usdc
+                trade['_aggregated_count'] = len(buf['trades'])
+                results.append(trade)
+        _aggregation_buffer.clear()
+    return results
 
 
 # ---- Database Init ----
@@ -603,18 +765,20 @@ def execute_live_trade(client, trade, config):
         signed_order = client.create_market_order(market_order)
         resp = client.post_order(signed_order, OrderType.FOK)
 
-        # Resubmit logic (from Rust): retry with price escalation on failure
+        # Resubmit logic (from repo: RETRY_LIMIT config): retry with price escalation on failure
+        retry_limit = config.get('retry_limit', DEFAULT_FRONTRUN_CONFIG['retry_limit'])
         if not resp or (hasattr(resp, 'get') and resp.get('error_msg')):
-            max_retries = 3 if original_size >= 2000 else 2
+            max_retries = min(retry_limit, 5)  # Cap at 5
             for attempt in range(max_retries):
-                time.sleep(0.05)  # 50ms between retries
+                time.sleep(0.05 * (attempt + 1))  # Progressive backoff: 50ms, 100ms, 150ms...
                 try:
                     resp = client.post_order(signed_order, OrderType.FOK)
                     if resp and not (hasattr(resp, 'get') and resp.get('error_msg')):
-                        log_event('ENGINE', 'INFO', f'Resubmit #{attempt+1} succeeded [{tier_label}]')
+                        log_event('ENGINE', 'INFO', f'Retry #{attempt+1}/{max_retries} succeeded [{tier_label}]')
                         break
                 except Exception:
-                    pass
+                    if attempt == max_retries - 1:
+                        log_event('ENGINE', 'WARN', f'All {max_retries} retries exhausted [{tier_label}]')
 
         return True, f'[{tier_label}] {str(resp)[:180]}', our_size
     except Exception as e:
@@ -695,12 +859,13 @@ def copy_trading_loop():
             mode_label = 'MOCK' if mock_mode else 'LIVE'
             log_event('ENGINE', 'INFO', f'Found {len(new_trades)} trade(s) to copy [{mode_label}]')
 
-            # For live mode, check balance and init CLOB
+            # For live mode, validate balances (USDC + POL) and init CLOB
             client = None
             if not mock_mode:
-                balance = get_usdc_balance(config.get('funder_address', ''))
-                if balance < 1:
-                    log_event('ENGINE', 'WARN', f'Low balance: ${balance:.2f}', 'Need at least $1 USDC.e')
+                is_valid, usdc_bal, pol_bal, bal_msg = validate_balances(config)
+                if not is_valid:
+                    log_event('ENGINE', 'WARN', f'Balance check failed: {bal_msg}',
+                              f'USDC: ${usdc_bal:.2f} | POL: {pol_bal:.4f}')
                     time.sleep(30)
                     continue
                 client = get_clob_client(config)
@@ -761,6 +926,21 @@ def copy_trading_loop():
 
                 log_event('ENGINE', 'COPY', f'[{mode_label}|{tier_label}|{strategy}] Copying {side_str} from {trader_name}',
                           f'{market_title} | ${trade_size:.2f}')
+
+                # Trade aggregation (from repo: TRADE_AGGREGATION_ENABLED)
+                should_exec, agg_trade = aggregate_trade(trade, config)
+                if not should_exec:
+                    log_event('ENGINE', 'INFO', f'Buffered trade for aggregation: {market_title[:40]}')
+                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                    config[ts_key] = trade['timestamp']
+                    save_config(config)
+                    continue
+                if agg_trade:
+                    agg_count = agg_trade.get('_aggregated_count', 1)
+                    if agg_count > 1:
+                        log_event('ENGINE', 'INFO', f'Executing aggregated trade ({agg_count} trades combined)')
+                        trade_size = float(agg_trade.get('usdc_size') or 0)
+                        trade = agg_trade  # Use the aggregated trade
 
                 # In mock mode, if this is a SELL, try to close matching OPEN BUY positions first
                 if mock_mode and side_str == 'SELL' and trade.get('condition_id'):
@@ -1521,6 +1701,11 @@ def get_config():
     if has_creds:
         usdc_balance = get_usdc_balance(funder)
 
+    # Get POL balance for gas fee display
+    pol_balance = None
+    if has_creds:
+        pol_balance = get_pol_balance(funder)
+
     safe = {
         'copy_trading_enabled': config.get('copy_trading_enabled', False),
         'copy_percentage': config.get('copy_percentage', 10),
@@ -1529,6 +1714,7 @@ def get_config():
         'has_credentials': has_creds,
         'funder_address': funder,
         'usdc_balance': round(usdc_balance, 2) if usdc_balance is not None else None,
+        'pol_balance': round(pol_balance, 4) if pol_balance is not None else None,
         'engine_running': copy_engine['running'] and copy_engine['thread'] is not None and copy_engine['thread'].is_alive(),
         'trades_copied': copy_engine['trades_copied'],
         'trades_failed': copy_engine['trades_failed'],
@@ -1541,6 +1727,23 @@ def get_config():
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
         'max_trades_per_event': config.get('max_trades_per_event', 0),
+        # Frontrunning / Mempool settings (from repo)
+        'frontrun_enabled': config.get('frontrun_enabled', DEFAULT_FRONTRUN_CONFIG['frontrun_enabled']),
+        'frontrun_size_multiplier': config.get('frontrun_size_multiplier', DEFAULT_FRONTRUN_CONFIG['frontrun_size_multiplier']),
+        'gas_price_multiplier': config.get('gas_price_multiplier', DEFAULT_FRONTRUN_CONFIG['gas_price_multiplier']),
+        'min_trade_size_usd': config.get('min_trade_size_usd', DEFAULT_FRONTRUN_CONFIG['min_trade_size_usd']),
+        'retry_limit': config.get('retry_limit', DEFAULT_FRONTRUN_CONFIG['retry_limit']),
+        'fetch_interval': config.get('fetch_interval', DEFAULT_FRONTRUN_CONFIG['fetch_interval']),
+        'trade_aggregation_enabled': config.get('trade_aggregation_enabled', DEFAULT_FRONTRUN_CONFIG['trade_aggregation_enabled']),
+        'trade_aggregation_window_seconds': config.get('trade_aggregation_window_seconds', DEFAULT_FRONTRUN_CONFIG['trade_aggregation_window_seconds']),
+        'target_addresses': config.get('target_addresses', ''),
+        # Mempool monitor status
+        'mempool_running': mempool_monitor['running'],
+        'mempool_pending_seen': mempool_monitor['pending_txns_seen'],
+        'mempool_frontrun_attempts': mempool_monitor['frontrun_attempts'],
+        'mempool_frontrun_successes': mempool_monitor['frontrun_successes'],
+        # Current gas price
+        'current_gas_gwei': round(get_gas_price(), 1),
     }
     return jsonify(safe)
 
@@ -1575,6 +1778,30 @@ def update_config():
     if 'max_trades_per_event' in data:
         config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
         log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
+    # Frontrunning / Mempool settings (from repo)
+    if 'frontrun_enabled' in data:
+        config['frontrun_enabled'] = bool(data['frontrun_enabled'])
+        log_event('APP', 'INFO', f'Frontrun mode {"enabled" if data["frontrun_enabled"] else "disabled"}')
+    if 'frontrun_size_multiplier' in data:
+        config['frontrun_size_multiplier'] = max(0.01, min(2.0, float(data['frontrun_size_multiplier'])))
+    if 'gas_price_multiplier' in data:
+        config['gas_price_multiplier'] = max(1.0, min(5.0, float(data['gas_price_multiplier'])))
+        log_event('APP', 'INFO', f'Gas price multiplier set to {config["gas_price_multiplier"]}x')
+    if 'min_trade_size_usd' in data:
+        config['min_trade_size_usd'] = max(0, float(data['min_trade_size_usd']))
+    if 'retry_limit' in data:
+        config['retry_limit'] = max(0, min(10, int(data['retry_limit'])))
+    if 'fetch_interval' in data:
+        config['fetch_interval'] = max(0.5, min(60, float(data['fetch_interval'])))
+    if 'trade_aggregation_enabled' in data:
+        config['trade_aggregation_enabled'] = bool(data['trade_aggregation_enabled'])
+        log_event('APP', 'INFO', f'Trade aggregation {"enabled" if data["trade_aggregation_enabled"] else "disabled"}')
+    if 'trade_aggregation_window_seconds' in data:
+        config['trade_aggregation_window_seconds'] = max(10, min(3600, int(data['trade_aggregation_window_seconds'])))
+    if 'target_addresses' in data:
+        config['target_addresses'] = data['target_addresses'].strip()
+        addr_count = len([a for a in config['target_addresses'].split(',') if a.strip()]) if config['target_addresses'] else 0
+        log_event('APP', 'INFO', f'Target addresses updated: {addr_count} address(es)')
     save_config(config)
     return jsonify({'success': True})
 
@@ -1605,7 +1832,186 @@ def get_balance():
     if not funder:
         return jsonify({'error': 'No funder address configured', 'balance': None})
     usdc = get_usdc_balance(funder)
-    return jsonify({'success': True, 'usdc_balance': round(usdc, 2), 'funder_address': funder})
+    pol = get_pol_balance(funder)
+    gas_price = get_gas_price()
+    return jsonify({
+        'success': True, 'funder_address': funder,
+        'usdc_balance': round(usdc, 2),
+        'pol_balance': round(pol, 4),
+        'gas_price_gwei': round(gas_price, 1),
+    })
+
+
+@app.route('/api/check-allowance', methods=['GET'])
+def check_allowance():
+    """Check USDC.e allowance for Polymarket CTF Exchange (from repo CLI: check-allowance)."""
+    config = load_config()
+    funder = config.get('funder_address', '').strip().lower()
+    if not funder:
+        return jsonify({'error': 'No funder address configured'}), 400
+    # Check allowance for both the CTF Exchange and the NegRisk Exchange
+    ctf_exchange = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E'
+    neg_risk_exchange = '0xC5d563A36AE78145C45a50134d48A1215220f80a'
+    ctf_allowance = get_usdc_allowance(funder, ctf_exchange)
+    neg_risk_allowance = get_usdc_allowance(funder, neg_risk_exchange)
+    return jsonify({
+        'funder_address': funder,
+        'ctf_exchange_allowance': round(ctf_allowance, 2),
+        'neg_risk_exchange_allowance': round(neg_risk_allowance, 2),
+        'ctf_exchange': ctf_exchange,
+        'neg_risk_exchange': neg_risk_exchange,
+        'sufficient': ctf_allowance >= 1000 and neg_risk_allowance >= 1000,
+    })
+
+
+@app.route('/api/validate-balances', methods=['GET'])
+def api_validate_balances():
+    """Validate USDC + POL balances for trading readiness (from repo: balance validation)."""
+    config = load_config()
+    is_valid, usdc, pol, msg = validate_balances(config)
+    gas_price = get_gas_price()
+    return jsonify({
+        'valid': is_valid,
+        'usdc_balance': round(usdc, 2),
+        'pol_balance': round(pol, 4),
+        'gas_price_gwei': round(gas_price, 1),
+        'message': msg,
+        'estimated_gas_cost_usd': round(gas_price * 0.000021 * pol * 0.5, 4) if pol > 0 else 0,
+    })
+
+
+@app.route('/api/simulate', methods=['POST'])
+def simulate_trade():
+    """
+    Simulate a copy trade without executing (from repo CLI: simulate).
+    Calculates what the bot would do given a trade signal.
+    """
+    data = request.json or {}
+    config = load_config()
+
+    # Accept either a specific trade or use defaults
+    trade_size_usd = float(data.get('trade_size_usd', 100))
+    side = data.get('side', 'BUY').upper()
+    price = float(data.get('price', 0.5))
+    token_id = data.get('token_id', 'SIMULATION')
+
+    # Calculate copy size using current strategy
+    our_size = calculate_copy_size(trade_size_usd, config, side)
+    our_size = apply_prob_sizing(our_size, price, config)
+
+    # Get tier info
+    tier = get_exec_tier(trade_size_usd, side)
+
+    # Apply tier multiplier
+    tier_size = round(our_size * tier.get('size_multiplier', 1.0), 2)
+    tier_size = min(tier_size, config.get('max_trade_size', 100))
+
+    # Frontrun calculation
+    frontrun_size = 0
+    if config.get('frontrun_enabled', False):
+        frontrun_mult = config.get('frontrun_size_multiplier', 0.5)
+        frontrun_size = round(trade_size_usd * frontrun_mult, 2)
+
+    # Gas cost estimate
+    gas_price = get_gas_price()
+    gas_mult = config.get('gas_price_multiplier', 1.2)
+    priority_gas = gas_price * gas_mult
+    est_gas_cost = priority_gas * 200000 / 1e9  # ~200k gas units for a trade
+
+    # Balance check
+    is_valid, usdc_bal, pol_bal, bal_msg = validate_balances(config)
+
+    result = {
+        'simulation': True,
+        'input': {
+            'trade_size_usd': trade_size_usd,
+            'side': side,
+            'price': price,
+        },
+        'strategy': config.get('copy_strategy', 'PERCENTAGE'),
+        'copy_size_before_tier': round(our_size, 2),
+        'tier': tier.get('label', '?'),
+        'tier_multiplier': tier.get('size_multiplier', 1.0),
+        'final_copy_size': tier_size,
+        'frontrun_enabled': config.get('frontrun_enabled', False),
+        'frontrun_size': frontrun_size,
+        'gas_price_gwei': round(gas_price, 1),
+        'priority_gas_gwei': round(priority_gas, 1),
+        'estimated_gas_cost_pol': round(est_gas_cost, 6),
+        'balance_valid': is_valid,
+        'usdc_balance': round(usdc_bal, 2),
+        'pol_balance': round(pol_bal, 4),
+        'balance_message': bal_msg,
+        'would_execute': is_valid and tier_size >= config.get('min_trade_size', 1),
+        'retry_limit': config.get('retry_limit', 3),
+        'aggregation_enabled': config.get('trade_aggregation_enabled', False),
+    }
+
+    log_event('APP', 'INFO', f'Simulation: {side} ${trade_size_usd} -> copy ${tier_size} [{tier.get("label")}]',
+              f'Strategy: {result["strategy"]} | Frontrun: {frontrun_size}')
+
+    return jsonify(result)
+
+
+@app.route('/api/manual-sell', methods=['POST'])
+def manual_sell():
+    """
+    Execute a manual sell order via CLOB (from repo CLI: manual-sell).
+    Requires token_id and amount.
+    """
+    data = request.json or {}
+    config = load_config()
+    token_id = data.get('token_id', '')
+    amount = float(data.get('amount', 0))
+
+    if not token_id:
+        return jsonify({'error': 'token_id is required'}), 400
+    if amount <= 0:
+        return jsonify({'error': 'amount must be positive'}), 400
+
+    mock_mode = config.get('mock_mode', False)
+
+    if mock_mode:
+        # Simulate the sell
+        mock_id = f"MANUAL-SELL-{random.randint(10000,99999)}"
+        log_event('ENGINE', 'SUCCESS', f'[MOCK] Manual sell: {amount} shares of {token_id[:20]}', mock_id)
+        return jsonify({'success': True, 'mock': True, 'response': mock_id, 'amount': amount})
+
+    if not CLOB_AVAILABLE:
+        return jsonify({'error': 'CLOB client not available'}), 500
+
+    client = get_clob_client(config)
+    if not client:
+        return jsonify({'error': 'Could not connect to CLOB API'}), 500
+
+    try:
+        market_order = MarketOrderArgs(token_id=token_id, amount=amount, side=SELL, order_type=OrderType.FOK)
+        signed_order = client.create_market_order(market_order)
+        resp = client.post_order(signed_order, OrderType.FOK)
+        log_event('ENGINE', 'SUCCESS', f'Manual sell: {amount} shares of {token_id[:20]}', str(resp)[:200])
+        return jsonify({'success': True, 'mock': False, 'response': str(resp)[:200], 'amount': amount})
+    except Exception as e:
+        log_event('ENGINE', 'FAILED', f'Manual sell failed: {token_id[:20]}', str(e))
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/mempool/status', methods=['GET'])
+def mempool_status():
+    """Get mempool monitor status and stats."""
+    config = load_config()
+    target_addrs = config.get('target_addresses', '')
+    addr_list = [a.strip() for a in target_addrs.split(',') if a.strip()] if target_addrs else []
+    return jsonify({
+        'running': mempool_monitor['running'],
+        'pending_txns_seen': mempool_monitor['pending_txns_seen'],
+        'frontrun_attempts': mempool_monitor['frontrun_attempts'],
+        'frontrun_successes': mempool_monitor['frontrun_successes'],
+        'last_pending_tx': mempool_monitor['last_pending_tx'],
+        'target_addresses': addr_list,
+        'target_count': len(addr_list),
+        'blocknative_configured': bool(BLOCKNATIVE_API_KEY),
+        'frontrun_enabled': config.get('frontrun_enabled', False),
+    })
 
 
 @app.route('/api/copy-trades', methods=['GET'])
@@ -1936,10 +2342,16 @@ if __name__ == '__main__':
     start_copy_engine()
     log_event('APP', 'INFO', 'Server started', f'CLOB: {"available" if CLOB_AVAILABLE else "not installed"}')
     print("=" * 60)
-    print("  Polymarket Copy Trader")
+    print("  Polymarket Copy Trader (Blocknative Mempool Edition)")
     print("  Dashboard: http://localhost:5000")
-    print(f"  Fetcher: {'Alchemy (Polygon)' if ALCHEMY_API_KEY else 'Activity API (set ALCHEMY_API_KEY for on-chain)'}")
+    print(f"  Fetcher: {'Blocknative Mempool + Data API' if BLOCKNATIVE_API_KEY else 'Data API only (set BLOCKNATIVE_API_KEY for mempool)'}")
     print(f"  CLOB client: {'Available' if CLOB_AVAILABLE else 'Not installed (mock only)'}")
+    config = load_config()
+    print(f"  Frontrunning: {'Enabled' if config.get('frontrun_enabled') else 'Disabled'}")
+    target_addrs = config.get('target_addresses', '')
+    addr_count = len([a for a in target_addrs.split(',') if a.strip()]) if target_addrs else 0
+    print(f"  Target addresses: {addr_count}")
+    print(f"  Gas multiplier: {config.get('gas_price_multiplier', 1.2)}x")
     print("  Copy engine running in background")
     print("=" * 60)
     app.run(debug=False, port=5000, threaded=True)
