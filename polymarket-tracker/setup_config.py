@@ -128,6 +128,8 @@ def setup():
         print(f"  Copy percentage: {config.get('copy_percentage', 10)}%")
         print(f"  Max trade size:  ${config.get('max_trade_size', 100)}")
         print(f"  Min trade size:  ${config.get('min_trade_size', 10)}")
+        mpe = config.get('max_trades_per_event', 0)
+        print(f"  Max / event:     {mpe if mpe > 0 else 'unlimited'}")
         print()
         reconfigure = input("Reconfigure? (y/N): ").strip().lower()
         if reconfigure != 'y':
@@ -194,6 +196,10 @@ def setup():
     mn_input = input(f"  Min trade size to copy USD [{config.get('min_trade_size', 10)}]: ").strip()
     min_size = float(mn_input) if mn_input else config.get('min_trade_size', 10)
 
+    mpe_input = input(f"  Max trades per event (0 = unlimited) [{config.get('max_trades_per_event', 0)}]: ").strip()
+    max_per_event = int(mpe_input) if mpe_input else config.get('max_trades_per_event', 0)
+    max_per_event = max(0, max_per_event)
+
     enable_input = input("  Enable copy trading now? (y/N): ").strip().lower()
     enabled = enable_input == 'y'
 
@@ -204,6 +210,7 @@ def setup():
     config['copy_percentage'] = copy_pct
     config['max_trade_size'] = max_size
     config['min_trade_size'] = min_size
+    config['max_trades_per_event'] = max_per_event
     config['copy_trading_enabled'] = enabled
 
     save_config(config)

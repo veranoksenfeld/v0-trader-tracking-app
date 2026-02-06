@@ -640,10 +640,21 @@ def copy_trading_loop():
                 continue
 
             # Use separate timestamps for mock vs live so toggling mock doesn't skip live trades
+            # If timestamp is 0 or missing, set to NOW so we only copy future trades
             if mock_mode:
                 last_processed = config.get('last_mock_processed_timestamp', 0)
+                if not last_processed:
+                    last_processed = int(time.time())
+                    config['last_mock_processed_timestamp'] = last_processed
+                    save_config(config)
+                    log_event('ENGINE', 'INFO', 'Starting mock copy from NOW (only new trades)')
             else:
                 last_processed = config.get('last_processed_timestamp', 0)
+                if not last_processed:
+                    last_processed = int(time.time())
+                    config['last_processed_timestamp'] = last_processed
+                    save_config(config)
+                    log_event('ENGINE', 'INFO', 'Starting live copy from NOW (only new trades)')
 
             conn = get_db()
             cursor = conn.cursor()
@@ -673,9 +684,6 @@ def copy_trading_loop():
 
             new_trades = [dict(row) for row in cursor.fetchall()]
 
-            # Count total successful copy trades this session for max_trades limit
-            cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE status='SUCCESS'")
-            total_copied = cursor.fetchone()['c']
             conn.close()
 
             copy_engine['last_check'] = datetime.now().isoformat()
@@ -686,17 +694,6 @@ def copy_trading_loop():
 
             mode_label = 'MOCK' if mock_mode else 'LIVE'
             log_event('ENGINE', 'INFO', f'Found {len(new_trades)} trade(s) to copy [{mode_label}]')
-
-            # Check max trades limit
-            max_trades = config.get('max_trades', 0)
-            if max_trades > 0 and total_copied >= max_trades:
-                log_event('ENGINE', 'SKIP', f'Max trades limit reached ({total_copied}/{max_trades})')
-                # Still advance timestamp so we don't re-check the same trades
-                ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                config[ts_key] = new_trades[-1]['timestamp']
-                save_config(config)
-                time.sleep(10)
-                continue
 
             # For live mode, check balance and init CLOB
             client = None
@@ -713,27 +710,22 @@ def copy_trading_loop():
                     continue
 
             for trade in new_trades:
-                # Re-check max trades inside loop
-                if max_trades > 0 and copy_engine['trades_copied'] + total_copied >= max_trades:
-                    log_event('ENGINE', 'SKIP', f'Max trades limit reached')
-                    break
-
                 min_size = config.get('min_trade_size', 10)
                 trade_size = float(trade.get('usdc_size') or 0)
                 side_str = (trade.get('side') or '').upper()
                 token_id = trade.get('asset') or trade.get('condition_id') or ''
 
-                # Check max trades per event limit
+                # Check max trades per event limit (counts ALL copy trades for this condition_id)
                 max_per_event = config.get('max_trades_per_event', 0)
                 if max_per_event > 0 and trade.get('condition_id'):
                     conn2 = get_db()
                     c2 = conn2.cursor()
-                    c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
+                    c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND side = 'BUY' AND status = 'SUCCESS'",
                                (trade['condition_id'],))
-                    event_open = c2.fetchone()['c']
+                    event_count = c2.fetchone()['c']
                     conn2.close()
-                    if event_open >= max_per_event:
-                        log_event('ENGINE', 'SKIP', f'Max open trades per event reached ({event_open}/{max_per_event})',
+                    if event_count >= max_per_event:
+                        log_event('ENGINE', 'SKIP', f'Max trades in event reached ({event_count}/{max_per_event})',
                                   f'{trade.get("title", "")[:50]}')
                         ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                         config[ts_key] = trade['timestamp']
@@ -1574,7 +1566,6 @@ def get_config():
         'copy_strategy': config.get('copy_strategy', 'PERCENTAGE'),
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
-        'max_trades': config.get('max_trades', 0),
         'max_trades_per_event': config.get('max_trades_per_event', 0),
     }
     return jsonify(safe)
@@ -1597,8 +1588,8 @@ def update_config():
         old_mock = config.get('mock_mode', False)
         config['mock_mode'] = new_mock
         if new_mock and not old_mock:
-            config['last_mock_processed_timestamp'] = 0
-        log_event('APP', 'INFO', f'Mock mode {"enabled" if new_mock else "disabled"}')
+            config['last_mock_processed_timestamp'] = int(time.time())
+        log_event('APP', 'INFO', f'Mock mode {"enabled" if new_mock else "disabled"} (copying only new trades from now)')
     # Strategy settings (from Rust bot)
     if 'copy_strategy' in data:
         config['copy_strategy'] = data['copy_strategy']
@@ -1607,8 +1598,6 @@ def update_config():
         config['fixed_trade_size'] = max(0.1, float(data['fixed_trade_size']))
     if 'prob_sizing_enabled' in data:
         config['prob_sizing_enabled'] = bool(data['prob_sizing_enabled'])
-    if 'max_trades' in data:
-        config['max_trades'] = max(0, int(data['max_trades']))
     if 'max_trades_per_event' in data:
         config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
         log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
