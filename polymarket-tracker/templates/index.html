@@ -701,7 +701,7 @@
         document.getElementById('frontrun-ok').textContent=config.mempool_frontrun_successes||0;
         document.getElementById('frontrun-fail').textContent=(config.mempool_frontrun_attempts||0)-(config.mempool_frontrun_successes||0);
         const mempoolEl=document.getElementById('mempool-status');
-        if(config.mempool_running){mempoolEl.innerHTML='<span class="dot on"></span>Monitoring';}else if(config.blocknative_configured){mempoolEl.innerHTML='<span class="dot warn"></span>Ready';}else{mempoolEl.innerHTML='<span class="dot off"></span>Not configured';}
+        if(config.mempool_running){mempoolEl.innerHTML='<span class="dot on"></span>Monitoring';}else{mempoolEl.innerHTML='<span class="dot warn"></span>Ready (Polygon RPC)';}
         // Aggregation fields
         document.getElementById('agg-toggle').classList.toggle('active',!!config.trade_aggregation_enabled);
         document.getElementById('agg-window-input').value=config.trade_aggregation_window_seconds||300;
@@ -730,7 +730,7 @@
     }
 
     // ---- Stats & Trades ----
-    async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color=s.blocknative_configured?'var(--green)':'var(--orange)';}}catch(e){} }
+    async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color='var(--green)';}}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
 
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }

@@ -109,21 +109,15 @@ def setup():
     config = load_config()
 
     # Show current config
-    if config.get('private_key') or config.get('blocknative_api_key'):
-        if config.get('private_key'):
-            pk = config['private_key']
-            masked_pk = pk[:4] + '*' * (len(pk) - 8) + pk[-4:] if len(pk) > 8 else '***'
-            print(f"  Private key:     {masked_pk}")
+    if config.get('private_key'):
+        pk = config['private_key']
+        masked_pk = pk[:4] + '*' * (len(pk) - 8) + pk[-4:] if len(pk) > 8 else '***'
+        print(f"  Private key:     {masked_pk}")
         print(f"  Current wallet:  {config.get('funder_address', 'Not set')}")
         if config.get('funder_address'):
             bal = get_usdc_balance(config.get('funder_address', ''))
             print(f"  USDC.e Balance:  ${bal:,.2f}")
-        if config.get('blocknative_api_key'):
-            bk = config['blocknative_api_key']
-            masked_bk = bk[:6] + '*' * max(0, len(bk) - 10) + bk[-4:] if len(bk) > 10 else '***'
-            print(f"  Blocknative key: {masked_bk}")
-        else:
-            print(f"  Blocknative key: Not set")
+        print(f"  RPC mode:        Polygon RPC (polygon-rpc.com)")
         print(f"  Copy enabled:    {'Yes' if config.get('copy_trading_enabled') else 'No'}")
         print(f"  Copy percentage: {config.get('copy_percentage', 10)}%")
         print(f"  Max trade size:  ${config.get('max_trade_size', 100)}")
@@ -159,28 +153,6 @@ def setup():
     print("    2 = Browser Wallet (MetaMask, etc.)")
     sig_input = input("  Select (1/2) [1]: ").strip()
     sig_type = int(sig_input) if sig_input in ('1', '2') else 1
-
-    # Blocknative API key
-    print()
-    print("--- Blocknative Mempool (Real-Time Transaction Monitoring) ---")
-    print("  Get a free key at: https://www.blocknative.com")
-    print("  Sign up, create an API key for Polygon monitoring.")
-    print()
-    existing_bn = config.get('blocknative_api_key', '')
-    if existing_bn:
-        masked = existing_bn[:6] + '*' * max(0, len(existing_bn) - 10) + existing_bn[-4:] if len(existing_bn) > 10 else '***'
-        print(f"  Current key: {masked}")
-    bn_input = input(f"  Blocknative API Key (Enter to keep, 'clear' to remove): ").strip()
-    if bn_input.lower() == 'clear':
-        config['blocknative_api_key'] = ''
-        print("  Blocknative key cleared. Will use Data API only.")
-    elif bn_input:
-        config['blocknative_api_key'] = bn_input
-        # Also set as env var for current session
-        os.environ['BLOCKNATIVE_API_KEY'] = bn_input
-        print("  Blocknative API key saved.")
-    else:
-        print("  Keeping existing key." if existing_bn else "  Skipped. Will use Data API only.")
 
     # Copy trading settings
     print()

@@ -3,38 +3,6 @@ Polymarket Copy Trader - Flask Web Application
 Integrated copy trading engine with MOCK MODE for testing.
 Unified log system for app.py, fetcher.py, copy_trader.py.
 """
-# ---------------------------------------------------------------------------
-# TRIO NEUTRALISER (must run before ANY import that touches httpx/httpcore)
-# The `trio` package is broken on Python 3.14 (trio._path raises TypeError
-# for the new pathlib.Path.parser attribute). httpcore auto-imports trio if
-# it's installed, which crashes py_clob_client -> httpx -> httpcore.
-# By blocking the import, httpcore falls back to its asyncio backend.
-# ---------------------------------------------------------------------------
-import sys
-_trio_broken = False
-try:
-    import trio  # noqa: test if trio works
-except (TypeError, ImportError, Exception):
-    _trio_broken = True
-
-if _trio_broken:
-    # Prevent httpcore from importing the broken trio
-    # Insert a fake module so `import trio` succeeds but is a no-op
-    import types
-    _fake_trio = types.ModuleType('trio')
-    _fake_trio.__path__ = []
-    _fake_trio.Event = None
-    _fake_trio.Lock = None
-    _fake_trio.Semaphore = None
-    _fake_trio.CancelScope = None
-    _fake_trio.abc = types.ModuleType('trio.abc')
-    _fake_trio.lowlevel = types.ModuleType('trio.lowlevel')
-    sys.modules['trio'] = _fake_trio
-    sys.modules['trio.abc'] = _fake_trio.abc
-    sys.modules['trio.lowlevel'] = _fake_trio.lowlevel
-    print("NOTE: trio is broken on this Python version. Patched out trio; httpcore will use asyncio backend.")
-# ---------------------------------------------------------------------------
-
 from flask import Flask, render_template, jsonify, request, Response
 import sqlite3
 from datetime import datetime
@@ -45,9 +13,9 @@ import threading
 import random
 import requests as req
 
-# Import fetcher functions for Blocknative-based trade fetching
+# Import fetcher functions
 try:
-    from fetcher import fetch_trades_for_trader as fetcher_fetch, resolve_proxy_wallet, update_trader_profile as fetcher_update_profile, bn_watch_address, bn_start_stream
+    from fetcher import fetch_trades_for_trader as fetcher_fetch, resolve_proxy_wallet, update_trader_profile as fetcher_update_profile, rpc_watch_address
     FETCHER_AVAILABLE = True
 except ImportError:
     FETCHER_AVAILABLE = False
@@ -55,21 +23,6 @@ except ImportError:
 app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
-
-def _resolve_blocknative_key():
-    """Read Blocknative API key from env var first, then config.json fallback."""
-    key = os.environ.get('BLOCKNATIVE_API_KEY', '')
-    if not key:
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                key = json.load(f).get('blocknative_api_key', '')
-            if key:
-                os.environ['BLOCKNATIVE_API_KEY'] = key  # propagate to fetcher module
-        except Exception:
-            pass
-    return key
-
-BLOCKNATIVE_API_KEY = _resolve_blocknative_key()
 
 # ---- Serialised DB write lock (prevents "database is locked") ----
 _db_write_lock = threading.Lock()
@@ -269,9 +222,6 @@ try:
 except (ImportError, TypeError, Exception) as _clob_err:
     CLOB_AVAILABLE = False
     print(f"WARNING: py-clob-client unavailable ({type(_clob_err).__name__}: {_clob_err}). Live trading disabled.")
-    if 'trio' in str(_clob_err).lower():
-        print("  FIX: Run  pip uninstall trio blocknative-sdk trio-websocket  then retry.")
-        print("  The trio package is broken on Python 3.14. Our Blocknative integration uses websocket-client instead.")
 
 
 # ---- Helpers ----
@@ -1598,25 +1548,21 @@ def debug_trades_sample():
     return jsonify(result)
 
 
-@app.route('/api/debug/blocknative-test/<wallet>', methods=['GET'])
-def debug_blocknative_test(wallet):
-    """Debug: test Blocknative mempool monitoring for a specific wallet address."""
+@app.route('/api/debug/rpc-test/<wallet>', methods=['GET'])
+def debug_rpc_test(wallet):
+    """Debug: test Polygon RPC monitoring for a specific wallet address."""
     wallet = wallet.lower()
     result = {
         'wallet': wallet,
-        'blocknative_configured': bool(BLOCKNATIVE_API_KEY),
+        'mode': 'Polygon RPC',
         'proxy_wallet': None,
         'addresses_watched': [],
-        'stream_active': False,
     }
     if not FETCHER_AVAILABLE:
         result['error'] = 'Fetcher module not loaded'
         return jsonify(result)
-    if not BLOCKNATIVE_API_KEY:
-        result['error'] = 'BLOCKNATIVE_API_KEY not set'
-        return jsonify(result)
 
-    from fetcher import resolve_proxy_wallet as rp, bn_watch_address, _bn_watched_addresses, _bn_connected
+    from fetcher import resolve_proxy_wallet as rp, rpc_watch_address as rwa, _rpc_watched_addresses
     proxy = rp(wallet)
     result['proxy_wallet'] = proxy
 
@@ -1625,11 +1571,10 @@ def debug_blocknative_test(wallet):
         addrs.append(proxy)
 
     for addr in addrs:
-        watched = bn_watch_address(addr)
+        watched = rwa(addr)
         result['addresses_watched'].append({'address': addr, 'watching': watched})
 
-    result['stream_active'] = _bn_connected
-    result['total_watched'] = len(_bn_watched_addresses)
+    result['total_watched'] = len(_rpc_watched_addresses)
     return jsonify(result)
 
 
@@ -1666,8 +1611,7 @@ def get_stats():
     return jsonify({
         'trader_count': trader_count, 'trade_count': trade_count,
         'total_volume': round(total_volume, 2), 'last_fetch': last_fetch,
-        'fetcher_mode': 'Data API' + (' + Blocknative' if BLOCKNATIVE_API_KEY else ''),
-        'blocknative_configured': bool(BLOCKNATIVE_API_KEY),
+        'fetcher_mode': 'Data API + Polygon RPC',
     })
 
 
@@ -2044,7 +1988,7 @@ def mempool_status():
         'last_pending_tx': mempool_monitor['last_pending_tx'],
         'target_addresses': addr_list,
         'target_count': len(addr_list),
-        'blocknative_configured': bool(BLOCKNATIVE_API_KEY),
+        'rpc_mode': True,
         'frontrun_enabled': config.get('frontrun_enabled', False),
     })
 
@@ -2377,9 +2321,9 @@ if __name__ == '__main__':
     start_copy_engine()
     log_event('APP', 'INFO', 'Server started', f'CLOB: {"available" if CLOB_AVAILABLE else "not installed"}')
     print("=" * 60)
-    print("  Polymarket Copy Trader (Blocknative Mempool Edition)")
+    print("  Polymarket Copy Trader (Polygon RPC Edition)")
     print("  Dashboard: http://localhost:5000")
-    print(f"  Fetcher: {'Blocknative Mempool + Data API' if BLOCKNATIVE_API_KEY else 'Data API only (set BLOCKNATIVE_API_KEY for mempool)'}")
+    print(f"  Fetcher: Data API + Polygon RPC (polygon-rpc.com)")
     print(f"  CLOB client: {'Available' if CLOB_AVAILABLE else 'Not installed (mock only)'}")
     config = load_config()
     print(f"  Frontrunning: {'Enabled' if config.get('frontrun_enabled') else 'Disabled'}")

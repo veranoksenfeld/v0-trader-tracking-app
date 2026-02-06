@@ -1,8 +1,8 @@
 """
-Polymarket Trade Fetcher - Blocknative Mempool Edition
-Uses Blocknative's Mempool SDK on Polygon (network_id=137) to stream
-real-time transactions for tracked wallets. Falls back to the Polymarket
-Data API REST endpoints when Blocknative data needs enrichment.
+Polymarket Trade Fetcher - Polygon RPC Edition
+Uses free public Polygon RPCs (polygon-rpc.com) to poll on-chain
+transactions for tracked wallets.  Falls back to the Polymarket
+Data API REST endpoints for trade enrichment.
 """
 import requests
 import sqlite3
@@ -18,24 +18,8 @@ DATABASE = 'polymarket_trades.db'
 _db_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Blocknative configuration (env var first, then config.json fallback)
+# Polygon RPC configuration
 # ---------------------------------------------------------------------------
-def _resolve_blocknative_key():
-    key = os.environ.get('BLOCKNATIVE_API_KEY', '')
-    if not key:
-        try:
-            with open('config.json', 'r') as f:
-                key = json.load(f).get('blocknative_api_key', '')
-            if key:
-                os.environ['BLOCKNATIVE_API_KEY'] = key
-        except Exception:
-            pass
-    return key
-
-BLOCKNATIVE_API_KEY = _resolve_blocknative_key()
-POLYGON_NETWORK_ID = 137  # Polygon Mainnet for Blocknative SDK
-
-# Free public Polygon RPCs for balance queries & tx receipt lookups
 POLYGON_RPCS = [
     'https://polygon-rpc.com',
     'https://rpc.ankr.com/polygon',
@@ -243,193 +227,110 @@ def get_market_by_token(token_id):
 
 
 # ---------------------------------------------------------------------------
-# Blocknative Mempool - Direct WebSocket (no SDK dependency)
-# Connects to wss://api.blocknative.com/v0 using websocket-client.
-# This avoids the trio/parser dependency issues in blocknative-sdk.
+# Polygon RPC On-Chain Polling
+# Scans recent blocks for Polymarket contract interactions by watched
+# wallets.  No third-party API key needed -- uses free public RPCs.
 # ---------------------------------------------------------------------------
 
-BN_WS_URL = 'wss://api.blocknative.com/v0'
-BN_API_VERSION = '0.3.2'
-BN_BLOCKCHAIN = 'ethereum'
-
-# State
-_bn_ws = None
-_bn_ws_lock = threading.Lock()
-_bn_connected = False
-_bn_watched_addresses = set()
-
-# Incoming transaction queue
-_bn_tx_queue = []
-_bn_tx_queue_lock = threading.Lock()
+# Track the last scanned block number so we only process new blocks
+_last_scanned_block = 0
+_rpc_watched_addresses = set()
+_rpc_tx_queue = []
+_rpc_tx_queue_lock = threading.Lock()
+_rpc_poll_running = False
 
 
-def _bn_network_name(nid):
-    return {1: 'main', 5: 'goerli', 56: 'bsc-main', 137: 'matic-main', 250: 'fantom-main'}.get(nid, 'main')
-
-
-def _bn_build_payload(category_code, event_code, data=None):
-    """Build a Blocknative WebSocket message payload."""
-    msg = {
-        'timeStamp': datetime.now().isoformat(),
-        'dappId': BLOCKNATIVE_API_KEY,
-        'version': BN_API_VERSION,
-        'blockchain': {
-            'system': BN_BLOCKCHAIN,
-            'network': _bn_network_name(POLYGON_NETWORK_ID),
-        },
-        'categoryCode': category_code,
-        'eventCode': event_code,
-    }
-    if data:
-        msg.update(data)
-    return msg
-
-
-def _bn_on_message(ws, message):
-    """Handle incoming WebSocket messages from Blocknative."""
-    global _bn_connected
-    try:
-        msg = json.loads(message)
-    except Exception:
-        return
-
-    status = msg.get('status', '')
-    if status != 'ok':
-        reason = msg.get('reason', '')
-        if reason:
-            print(f"  [Blocknative] Server error: {reason}")
-            log_event('WARN', f'Blocknative server: {reason}')
-        return
-
-    if 'event' not in msg:
-        return
-
-    event = msg['event']
-    event_code = event.get('eventCode', '')
-
-    # Skip echo/setup messages
-    if event_code in ('txRequest', 'nsfFail', 'txRepeat', 'txAwaitingApproval',
-                       'txConfirmReminder', 'txSendFail', 'txError', 'txUnderPriced', 'txSent',
-                       'checkDappId'):
-        return
-
-    if 'transaction' not in event:
-        return
-
-    txn = event['transaction']
-    txn_status = txn.get('status', '')
-
-    # Capture pending (for frontrunning) and confirmed (for tracking)
-    if txn_status in ('pending', 'confirmed', 'speedup'):
-        # Flatten the event data into the txn dict
-        txn['eventCode'] = event_code
-        if 'contractCall' in event:
-            txn['contractCall'] = event['contractCall']
-        with _bn_tx_queue_lock:
-            _bn_tx_queue.append(txn)
-
-
-def _bn_on_open(ws):
-    """On WebSocket connect, send init message then subscribe all watched addresses."""
-    global _bn_connected
-    _bn_connected = True
-    print(f"  [Blocknative] WebSocket connected to {_bn_network_name(POLYGON_NETWORK_ID)}")
-    log_event('INFO', 'Blocknative WebSocket connected')
-
-    # Send checkDappId init message
-    init_msg = _bn_build_payload('initialize', 'checkDappId')
-    ws.send(json.dumps(init_msg))
-
-    # Re-subscribe all watched addresses
-    for addr in list(_bn_watched_addresses):
-        _bn_send_watch(ws, addr)
-
-
-def _bn_on_close(ws, close_status_code, close_msg):
-    global _bn_connected
-    _bn_connected = False
-    print(f"  [Blocknative] WebSocket closed (code={close_status_code})")
-    log_event('WARN', f'Blocknative WS closed: {close_status_code}')
-
-
-def _bn_on_error(ws, error):
-    print(f"  [Blocknative] WebSocket error: {error}")
-    log_event('WARN', f'Blocknative WS error: {error}')
-
-
-def _bn_send_watch(ws, address):
-    """Send a config message to watch an address."""
-    config_msg = _bn_build_payload('configs', 'put', {
-        'config': {
-            'scope': address,
-            'watchAddress': True,
-        }
-    })
-    try:
-        ws.send(json.dumps(config_msg))
-    except Exception as e:
-        print(f"  [Blocknative] Send watch error: {e}")
-
-
-def bn_watch_address(address):
-    """Subscribe to a wallet address on Blocknative."""
-    global _bn_ws
-    addr = address.lower()
-    if addr in _bn_watched_addresses:
-        return True
-    _bn_watched_addresses.add(addr)
-    # If already connected, send the watch message immediately
-    if _bn_ws and _bn_connected:
-        _bn_send_watch(_bn_ws, addr)
-        print(f"  [Blocknative] Watching {addr[:10]}...")
-        log_event('INFO', f'Blocknative watching {addr[:10]}...')
+def rpc_watch_address(address):
+    """Register a wallet address for RPC polling."""
+    _rpc_watched_addresses.add(address.lower())
     return True
 
 
-def bn_start_stream():
-    """Start the Blocknative WebSocket in a background thread with auto-reconnect."""
-    global _bn_ws
-    if not BLOCKNATIVE_API_KEY:
-        print("  [Blocknative] No API key - skipping mempool stream")
-        return False
-
-    try:
-        import websocket
-    except ImportError:
-        print("  [Blocknative] websocket-client not installed. Run: pip install websocket-client")
-        log_event('WARN', 'websocket-client not installed')
-        return False
-
-    def _run_forever():
-        global _bn_ws
-        while True:
-            try:
-                _bn_ws = websocket.WebSocketApp(
-                    BN_WS_URL,
-                    on_open=_bn_on_open,
-                    on_message=_bn_on_message,
-                    on_close=_bn_on_close,
-                    on_error=_bn_on_error,
-                )
-                _bn_ws.run_forever(ping_interval=15, ping_timeout=10)
-            except Exception as e:
-                print(f"  [Blocknative] Stream crash: {e}, reconnecting in 5s...")
-                log_event('WARN', f'Blocknative stream crash: {e}')
-            time.sleep(5)  # Wait before reconnect
-
-    t = threading.Thread(target=_run_forever, daemon=True)
-    t.start()
-    print("  [Blocknative] WebSocket stream starting...")
-    log_event('INFO', 'Blocknative WebSocket stream starting')
-    return True
-
-
-def bn_drain_queue():
-    """Drain and return all queued transactions from Blocknative."""
-    with _bn_tx_queue_lock:
-        txns = list(_bn_tx_queue)
-        _bn_tx_queue.clear()
+def rpc_drain_queue():
+    """Drain and return all queued transactions discovered via RPC polling."""
+    with _rpc_tx_queue_lock:
+        txns = list(_rpc_tx_queue)
+        _rpc_tx_queue.clear()
     return txns
+
+
+def _rpc_get_latest_block():
+    """Get the latest block number from Polygon RPC."""
+    result = _polygon_rpc('eth_blockNumber', [])
+    if result:
+        return int(result, 16)
+    return 0
+
+
+def _rpc_get_block_txns(block_num):
+    """Fetch a full block with transactions."""
+    hex_block = hex(block_num)
+    result = _polygon_rpc('eth_getBlockByNumber', [hex_block, True])
+    if result and isinstance(result, dict):
+        return result.get('transactions', [])
+    return []
+
+
+def _rpc_scan_blocks(wallets, from_block, to_block):
+    """
+    Scan a range of blocks for txns from/to watched wallets that interact
+    with Polymarket contracts.  Returns list of relevant tx dicts.
+    """
+    found = []
+    wallets_set = set(w.lower() for w in wallets)
+    for bn in range(from_block, to_block + 1):
+        txns = _rpc_get_block_txns(bn)
+        for tx in txns:
+            if not isinstance(tx, dict):
+                continue
+            tx_from = (tx.get('from') or '').lower()
+            tx_to = (tx.get('to') or '').lower()
+            # Must involve one of our wallets
+            if tx_from not in wallets_set and tx_to not in wallets_set:
+                continue
+            # Must involve a Polymarket contract
+            if tx_to not in POLYMARKET_CONTRACTS and tx_from not in POLYMARKET_CONTRACTS:
+                continue
+            found.append(tx)
+    return found
+
+
+def rpc_poll_once():
+    """
+    Poll new blocks from Polygon RPC and queue any Polymarket txns
+    for watched wallets.  Called from the main polling loop.
+    """
+    global _last_scanned_block
+    if not _rpc_watched_addresses:
+        return 0
+
+    latest = _rpc_get_latest_block()
+    if latest == 0:
+        return 0
+
+    if _last_scanned_block == 0:
+        # First run: start from a few blocks back to avoid scanning
+        # the entire chain.  ~2 seconds per Polygon block.
+        _last_scanned_block = max(0, latest - 5)
+
+    if latest <= _last_scanned_block:
+        return 0
+
+    # Cap scan range to avoid long-running requests
+    from_block = _last_scanned_block + 1
+    to_block = min(latest, from_block + 10)  # max 10 blocks per poll
+
+    try:
+        txns = _rpc_scan_blocks(_rpc_watched_addresses, from_block, to_block)
+        if txns:
+            with _rpc_tx_queue_lock:
+                _rpc_tx_queue.extend(txns)
+            print(f"  [RPC] Found {len(txns)} Polymarket tx(s) in blocks {from_block}-{to_block}")
+    except Exception as e:
+        print(f"  [RPC] Block scan error: {e}")
+
+    _last_scanned_block = to_block
+    return len(txns) if txns else 0
 
 
 def _polygon_rpc(method, params):
@@ -480,10 +381,10 @@ def fetch_usdc_value_from_tx(tx_hash, wallet):
         return 0.0
 
 
-def process_blocknative_txns(trader_id, wallet, txns, conn):
+def process_rpc_txns(trader_id, wallet, txns, conn):
     """
-    Process Blocknative transaction events and insert relevant Polymarket
-    trades into DB. Returns count of new trades inserted.
+    Process on-chain transactions found via Polygon RPC polling and insert
+    relevant Polymarket trades into DB. Returns count of new trades inserted.
     """
     new_count = 0
     wallet_lower = wallet.lower()
@@ -549,8 +450,8 @@ def process_blocknative_txns(trader_id, wallet, txns, conn):
             ))
             conn.commit()
         new_count += 1
-        print(f"    NEW [Blocknative]: {side} ${usdc_size:.2f} | tx {tx_hash[:16]}...")
-        log_event('TRADE', f'[Blocknative] {side} ${usdc_size:.2f} | tx {tx_hash[:16]}')
+        print(f"    NEW [RPC]: {side} ${usdc_size:.2f} | tx {tx_hash[:16]}...")
+        log_event('TRADE', f'[RPC] {side} ${usdc_size:.2f} | tx {tx_hash[:16]}')
 
     return new_count
 
@@ -663,7 +564,7 @@ def insert_trade_from_activity(trader_id, trade, conn):
 
 
 # ---------------------------------------------------------------------------
-# Combined fetch: Data API first, Blocknative real-time fallback
+# Combined fetch: Data API first, Polygon RPC on-chain fallback
 # ---------------------------------------------------------------------------
 
 def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
@@ -672,7 +573,7 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     Strategy:
     1. Try Polymarket Data API /trades endpoint (authoritative, uses profile address)
     2. Try Polymarket Data API /activity endpoint
-    3. Process any Blocknative real-time transactions from the queue
+    3. Process any on-chain transactions from Polygon RPC polling
     """
     total_new = 0
     eoa = wallet_address.lower()
@@ -727,39 +628,40 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     except Exception as e:
         print(f"  [Activity API] Error for {eoa[:10]}...: {e}")
 
-    # --- Method 3: Blocknative real-time stream (process queued txns) ---
-    if BLOCKNATIVE_API_KEY:
-        proxy = resolve_proxy_wallet(wallet_address)
-        wallets_to_scan = [eoa]
-        if proxy and proxy != eoa:
-            wallets_to_scan.append(proxy)
+    # --- Method 3: Polygon RPC on-chain polling (process queued txns) ---
+    proxy = resolve_proxy_wallet(wallet_address)
+    wallets_to_scan = [eoa]
+    if proxy and proxy != eoa:
+        wallets_to_scan.append(proxy)
 
-        # Make sure addresses are being watched
-        for w in wallets_to_scan:
-            bn_watch_address(w)
+    # Make sure addresses are registered for RPC polling
+    for w in wallets_to_scan:
+        rpc_watch_address(w)
 
-        # Process any queued transactions from Blocknative stream
-        try:
-            queued_txns = bn_drain_queue()
-            if queued_txns:
-                # Filter txns relevant to this trader's wallets
-                relevant = [t for t in queued_txns
-                            if (t.get('from') or '').lower() in wallets_to_scan
-                            or (t.get('to') or '').lower() in wallets_to_scan]
-                if relevant:
-                    for w in wallets_to_scan:
-                        wallet_txns = [t for t in relevant
-                                       if (t.get('from') or '').lower() == w
-                                       or (t.get('to') or '').lower() == w]
-                        new = process_blocknative_txns(trader_id, w, wallet_txns, conn)
-                        total_new += new
+    # Poll new blocks from the chain
+    rpc_poll_once()
 
-                if total_new > 0:
-                    print(f"  [Blocknative] {total_new} new trade(s) for {eoa[:10]}...")
-                    log_event('INFO', f'Blocknative: {total_new} new trade(s) for {eoa[:10]}')
-        except Exception as e:
-            print(f"  [Blocknative] Error for {eoa[:10]}...: {e}")
-            log_event('WARN', f'Blocknative error for {eoa[:10]}', str(e))
+    # Process any queued transactions from RPC scan
+    try:
+        queued_txns = rpc_drain_queue()
+        if queued_txns:
+            relevant = [t for t in queued_txns
+                        if (t.get('from') or '').lower() in wallets_to_scan
+                        or (t.get('to') or '').lower() in wallets_to_scan]
+            if relevant:
+                for w in wallets_to_scan:
+                    wallet_txns = [t for t in relevant
+                                   if (t.get('from') or '').lower() == w
+                                   or (t.get('to') or '').lower() == w]
+                    new = process_rpc_txns(trader_id, w, wallet_txns, conn)
+                    total_new += new
+
+            if total_new > 0:
+                print(f"  [RPC] {total_new} new trade(s) for {eoa[:10]}...")
+                log_event('INFO', f'RPC: {total_new} new trade(s) for {eoa[:10]}')
+    except Exception as e:
+        print(f"  [RPC] Error for {eoa[:10]}...: {e}")
+        log_event('WARN', f'RPC error for {eoa[:10]}', str(e))
 
     return total_new
 
@@ -770,9 +672,7 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
 
 def poll_loop():
     print(f"[{datetime.now()}] Polling started (every {POLL_INTERVAL}s)")
-    print(f"  Blocknative: {'configured' if BLOCKNATIVE_API_KEY else 'NOT SET - using Data API only'}")
-    if not BLOCKNATIVE_API_KEY:
-        print("  Set BLOCKNATIVE_API_KEY env var for real-time mempool monitoring")
+    print(f"  Mode: Data API + Polygon RPC on-chain polling")
 
     last_profile_refresh = time.time()
 
@@ -819,16 +719,11 @@ def poll_loop():
 
 def run_fetcher():
     print("=" * 60)
-    print("  Polymarket Trade Fetcher (Data API + Blocknative Mempool)")
+    print("  Polymarket Trade Fetcher (Data API + Polygon RPC)")
     print("=" * 60)
-    mode = 'Data API + Blocknative Mempool' if BLOCKNATIVE_API_KEY else 'Data API only'
-    print(f"  Mode: {mode}")
-    log_event('INFO', 'Fetcher started', f'Mode: {mode}')
-
-    # Start Blocknative stream if API key is available
-    if BLOCKNATIVE_API_KEY:
-        bn_start_stream()
-        time.sleep(1)  # Give stream time to connect
+    print(f"  Mode: Data API + Polygon RPC on-chain polling")
+    print(f"  RPCs: {', '.join(POLYGON_RPCS)}")
+    log_event('INFO', 'Fetcher started', 'Mode: Data API + Polygon RPC')
 
     # Initial fetch for all traders
     traders = get_tracked_traders()
@@ -843,12 +738,11 @@ def run_fetcher():
             if not trader['name']:
                 update_trader_profile(tid, addr, conn)
 
-            # Register addresses with Blocknative for real-time monitoring
-            if BLOCKNATIVE_API_KEY:
-                bn_watch_address(addr)
-                proxy = resolve_proxy_wallet(addr)
-                if proxy and proxy != addr.lower():
-                    bn_watch_address(proxy)
+            # Register addresses for RPC on-chain monitoring
+            rpc_watch_address(addr)
+            proxy = resolve_proxy_wallet(addr)
+            if proxy and proxy != addr.lower():
+                rpc_watch_address(proxy)
 
             new = fetch_trades_for_trader(tid, addr, conn, limit=100)
             print(f"  {name}: {new} new trade(s)")
