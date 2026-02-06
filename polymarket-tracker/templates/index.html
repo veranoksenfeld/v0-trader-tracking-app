@@ -526,7 +526,10 @@
 
     // ---- Stats & Trades ----
     async function fetchStats() { try{await fetch('/api/stats');}catch(e){} }
-    async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
+    async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json();
+    console.log('[v0] fetchTrades:',allTrades.length,'trades,',allTrades.filter(t=>t.end_date).length,'with end_date,',allTrades.filter(t=>t.condition_id).length,'with condition_id');
+    if(allTrades.length>0) console.log('[v0] sample trade:',JSON.stringify({end_date:allTrades[0].end_date,condition_id:allTrades[0].condition_id,outcome:allTrades[0].outcome,side:allTrades[0].side,title:allTrades[0].title}));
+    renderTrades();}catch(e){console.error('[v0] fetchTrades error:',e);} }
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
     function betBadge(outcome, side, price) {
         // Polymarket outcomes: "Yes"/"No", "Up"/"Down", or custom text
@@ -577,9 +580,9 @@
             const bet=betBadge(t.outcome, t.side, t.price);
             const endDate=t.end_date||'';
             const timerHtml=endDate
-                ?`<span data-end-date="${endDate}">${formatTimer(endDate)}</span>`
-                :(t.condition_id?`<span class="event-timer" data-cid="${t.condition_id}" style="color:var(--text-dim);">...</span>`
-                :'<span style="font-size:10px;color:var(--text-dim);">--</span>');
+                ?`<div data-end-date="${endDate}" style="line-height:1.3;">${formatTimer(endDate)}</div>`
+                :(t.condition_id?`<div data-cid="${t.condition_id}" style="color:var(--text-dim);font-size:10px;">loading...</div>`
+                :'<div style="font-size:10px;color:var(--text-dim);">--</div>');
             const sideUp=(t.side||'').toUpperCase();
             const sideBadge=sideUp==='BUY'?'<span class="side-buy-badge">BUY</span>':sideUp==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideUp||'--'}</span>`;
             return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome"><span class="tier-badge tier-${tier}">${tier}</span> ${dirBadge}</div></div></div></td><td>${bet}</td><td>${sideBadge}</td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
@@ -593,25 +596,32 @@
     async function fetchEndDate(el,cid) {
         if(_endDateFetching.has(cid)) return;
         _endDateFetching.add(cid);
-        if(el) el.textContent='...';
-        try{const r=await fetch('/api/market-end-date/'+cid);const d=await r.json();
-        if(d.end_date){
-            // Cache metadata
-            _marketMetaCache[cid] = d;
-            // Update all matching elements in the DOM
-            document.querySelectorAll(`[data-cid="${cid}"]`).forEach(span=>{
-                span.setAttribute('data-end-date',d.end_date);
-                span.removeAttribute('data-cid');
-                span.innerHTML=formatTimer(d.end_date);
-                span.style.cursor='default';
-            });
-            // Update allTrades + allCopyTrades caches
-            allTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
-            allCopyTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
-        }else{
-            document.querySelectorAll(`[data-cid="${cid}"]`).forEach(span=>{span.textContent='N/A';span.style.cursor='default';});
-        }}catch(e){
-            document.querySelectorAll(`[data-cid="${cid}"]`).forEach(span=>{span.textContent='--';});
+        if(el) el.textContent='loading...';
+        try{
+            const r=await fetch('/api/market-end-date/'+cid);
+            const d=await r.json();
+            console.log('[v0] fetchEndDate response for',cid,':',d);
+            if(d.end_date){
+                // Cache metadata
+                _marketMetaCache[cid] = d;
+                // Update all matching elements in the DOM
+                document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{
+                    el.setAttribute('data-end-date',d.end_date);
+                    el.removeAttribute('data-cid');
+                    el.style.lineHeight='1.3';
+                    el.innerHTML=formatTimer(d.end_date);
+                });
+                // Update allTrades + allCopyTrades caches
+                allTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
+                allCopyTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
+                console.log('[v0] Updated timer for cid',cid,'end_date=',d.end_date);
+            }else{
+                document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{el.textContent='N/A';});
+                console.log('[v0] No end_date for cid',cid);
+            }
+        }catch(e){
+            document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{el.textContent='err';});
+            console.error('[v0] fetchEndDate error for',cid,e);
         }
         _endDateFetching.delete(cid);
     }
@@ -622,11 +632,12 @@
             const cid=el.getAttribute('data-cid');
             if(cid && !_endDateFetching.has(cid)) cids.add(cid);
         });
+        console.log('[v0] autoFetchEndDates: found',cids.size,'condition_ids needing end dates');
         // Stagger fetches to avoid rate limiting
         let delay=0;
         cids.forEach(cid=>{
             setTimeout(()=>fetchEndDate(null,cid), delay);
-            delay+=300;
+            delay+=250;
         });
     }
 
@@ -641,24 +652,25 @@
         let end;
         if(typeof endDate==='number') end=new Date(endDate>1e12?endDate:endDate*1000);
         else end=new Date(endDate);
-        if(isNaN(end.getTime())) return '<span style="font-size:10px;color:var(--text-dim);">Invalid date</span>';
+        if(isNaN(end.getTime())) return '<span style="font-size:10px;color:var(--text-dim);">Bad date</span>';
 
         const now=new Date(), diff=end.getTime()-now.getTime();
         // Format the actual end time (always show this)
         const endTimeStr=end.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
 
-        if(diff<=0) return `<div class="event-timer" style="color:var(--red);">ENDED</div><div style="font-size:9px;color:var(--text-dim);margin-top:1px;">${endTimeStr}</div>`;
+        if(diff<=0) return '<span class="event-timer" style="color:var(--red);font-weight:700;">ENDED</span><br><span style="font-size:9px;color:var(--text-dim);">'+endTimeStr+'</span>';
 
         const d=Math.floor(diff/86400000), h=Math.floor((diff%86400000)/3600000), m=Math.floor((diff%3600000)/60000), s=Math.floor((diff%60000)/1000);
         let countdown='', color='var(--cyan)';
         if(d>0){ countdown=d+'d '+h+'h '+m+'m'; }
         else if(h>0){ countdown=h+'h '+m+'m '+s+'s'; color=h<2?'var(--yellow)':'var(--cyan)'; }
         else { countdown=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); color=m<5?'var(--red)':m<15?'var(--orange)':'var(--yellow)'; }
-        return `<div class="event-timer" style="color:${color};font-size:${d>0||h>0?'11px':'14px'};font-weight:700;">${countdown}</div><div style="font-size:9px;color:var(--text-dim);margin-top:2px;white-space:nowrap;">${endTimeStr}</div>`;
+        return '<span class="event-timer" style="color:'+color+';font-size:'+(d>0||h>0?'11px':'14px')+';font-weight:700;">'+countdown+'</span><br><span style="font-size:9px;color:var(--text-dim);white-space:nowrap;">'+endTimeStr+'</span>';
     }
     function updateEventTimers() {
         document.querySelectorAll('[data-end-date]').forEach(el=>{
-            el.innerHTML=formatTimer(el.getAttribute('data-end-date'));
+            const ed=el.getAttribute('data-end-date');
+            if(ed) el.innerHTML=formatTimer(ed);
         });
     }
     setInterval(updateEventTimers,1000);
@@ -703,10 +715,9 @@
 
             // Timer - auto-fetches end_date if missing
             let timerHtml;
-            if(t.end_date&&!isClosed) timerHtml=`<span data-end-date="${t.end_date}">${formatTimer(t.end_date)}</span>`;
-            else if(t.end_date&&isClosed) timerHtml=`<span data-end-date="${t.end_date}">${formatTimer(t.end_date)}</span>`;
-            else if(t.condition_id) timerHtml=`<span class="event-timer" data-cid="${t.condition_id}" style="color:var(--text-dim);">...</span>`;
-            else timerHtml='<span style="font-size:10px;color:var(--text-dim);">--</span>';
+            if(t.end_date) timerHtml=`<div data-end-date="${t.end_date}" style="line-height:1.3;">${formatTimer(t.end_date)}</div>`;
+            else if(t.condition_id) timerHtml=`<div data-cid="${t.condition_id}" style="color:var(--text-dim);font-size:10px;">loading...</div>`;
+            else timerHtml='<div style="font-size:10px;color:var(--text-dim);">--</div>';
 
             // Bet badge
             const betHtml=betBadge(t.outcome, t.side, t.price);

@@ -1261,7 +1261,21 @@ def get_trades():
     trades = [dict(row) for row in cursor.fetchall()]
     conn.close()
 
-    # Enrich trades with end_date from cache (non-blocking)
+    # Collect unique condition_ids we need end_dates for
+    cids_to_fetch = set()
+    for t in trades:
+        cid = t.get('condition_id')
+        if cid and cid not in _market_end_date_cache:
+            cids_to_fetch.add(cid)
+
+    # Fetch missing end_dates in bulk (up to 10 to avoid slow responses)
+    for cid in list(cids_to_fetch)[:10]:
+        try:
+            get_market_end_date(cid)
+        except Exception:
+            pass
+
+    # Enrich trades with end_date from cache
     for t in trades:
         cid = t.get('condition_id')
         if cid and cid in _market_end_date_cache:
