@@ -267,6 +267,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             trader_id INTEGER NOT NULL,
             transaction_hash TEXT UNIQUE,
+            trade_type TEXT DEFAULT 'TRADE',
             side TEXT, size REAL, price REAL, usdc_size REAL,
             timestamp INTEGER, title TEXT, slug TEXT, icon TEXT,
             event_slug TEXT, outcome TEXT, outcome_index INTEGER,
@@ -275,6 +276,12 @@ def init_db():
             FOREIGN KEY (trader_id) REFERENCES traders(id)
         )
     ''')
+
+    # Add trade_type column if missing (migration for existing DBs)
+    try:
+        cursor.execute("ALTER TABLE trades ADD COLUMN trade_type TEXT DEFAULT 'TRADE'")
+    except Exception:
+        pass  # Column already exists
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS copy_trades (
@@ -816,36 +823,42 @@ def copy_trading_loop():
                 trade_size = float(trade.get('usdc_size') or 0)
                 side_str = (trade.get('side') or '').upper()
                 token_id = trade.get('asset') or trade.get('condition_id') or ''
+                trade_type = (trade.get('trade_type') or 'TRADE').upper()
 
-                # Check max events limit (total distinct events with open positions)
-                max_events = config.get('max_events', 0)
-                if max_events > 0 and trade.get('condition_id'):
-                    conn2 = get_db()
-                    c2 = conn2.cursor()
-                    c2.execute("SELECT COUNT(DISTINCT condition_id) as c FROM copy_trades WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''")
-                    total_events = c2.fetchone()['c']
-                    # Check if this is a new event (not already in open trades)
-                    c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
-                               (trade['condition_id'],))
-                    already_in = c2.fetchone()['c']
-                    conn2.close()
-                    # If this is a new event and we're at the limit, skip
-                    if already_in == 0 and total_events >= max_events:
-                        log_event('ENGINE', 'SKIP', f'Max events limit reached ({total_events}/{max_events})',
-                                  f'{trade.get("title", "")[:50]}')
+                # Detect if this is a close signal (SELL, REDEEM, MERGE)
+                # Close signals should bypass min size and max events checks
+                is_close_signal = (
+                    side_str in ('SELL', 'REDEEM', 'MERGE') or
+                    trade_type in ('REDEEM', 'MERGE')
+                )
+
+                if not is_close_signal:
+                    # Check max events limit (only for new open trades)
+                    max_events = config.get('max_events', 0)
+                    if max_events > 0 and trade.get('condition_id'):
+                        conn2 = get_db()
+                        c2 = conn2.cursor()
+                        c2.execute("SELECT COUNT(DISTINCT condition_id) as c FROM copy_trades WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''")
+                        total_events = c2.fetchone()['c']
+                        c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
+                                   (trade['condition_id'],))
+                        already_in = c2.fetchone()['c']
+                        conn2.close()
+                        if already_in == 0 and total_events >= max_events:
+                            log_event('ENGINE', 'SKIP', f'Max events limit reached ({total_events}/{max_events})',
+                                      f'{trade.get("title", "")[:50]}')
+                            ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                            config[ts_key] = trade['timestamp']
+                            save_config(config)
+                            continue
+
+                    # Min size check (only for BUY trades, not close signals)
+                    effective_min = 0.01 if mock_mode else min_size
+                    if trade_size < effective_min:
                         ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
-
-                # In mock mode, allow smaller trades for testing
-                effective_min = 0.01 if mock_mode else min_size
-
-                if trade_size < effective_min:
-                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                    config[ts_key] = trade['timestamp']
-                    save_config(config)
-                    continue
 
                 trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
                 market_title = trade.get('title', 'Unknown')
@@ -868,8 +881,8 @@ def copy_trading_loop():
                 log_event('ENGINE', 'COPY', f'[{mode_label}|{tier_label}|{strategy}] Copying {side_str} from {trader_name}',
                           f'{market_title} | ${trade_size:.2f}')
 
-                # In mock or live mode, if this is a SELL, try to close matching OPEN BUY positions
-                if side_str == 'SELL' and trade.get('condition_id'):
+                # Handle close signals: SELL trades, REDEEM (market resolved), MERGE (manual close)
+                if is_close_signal and trade.get('condition_id'):
                     conn_close = get_db()
                     c_close = conn_close.cursor()
                     # Match on condition_id AND outcome for precise matching
@@ -888,32 +901,87 @@ def copy_trading_loop():
                         ''', (trade['condition_id'],))
                     open_positions = [dict(r) for r in c_close.fetchall()]
                     if open_positions:
-                        sell_price = float(trade.get('price') or 0)
+                        # For SELL: use the sell price as exit
+                        # For REDEEM: outcome resolved to 1.0 (won) so exit_price = 1.0 if usdcSize > 0
+                        # For MERGE: merged back to USDC, exit at ~entry (break-even)
+                        if trade_type == 'REDEEM':
+                            # Redeemed = outcome won, exit at 1.0
+                            exit_price = 1.0
+                        elif trade_type == 'MERGE':
+                            # Merged = manual close, use entry price (break-even) or current price
+                            exit_price = float(trade.get('price') or 0)
+                        else:
+                            exit_price = float(trade.get('price') or 0)
+
                         for op in open_positions:
                             entry_price = float(op.get('price') or 0)
                             op_size = float(op.get('our_size') or 0)
                             if entry_price <= 0 or op_size <= 0:
                                 continue
-                            # Correct PnL: shares = usd_spent / entry_price, pnl = shares * (sell_price - entry_price)
+                            # PnL: shares = usd_spent / entry_price, pnl = shares * (exit - entry)
                             shares = op_size / entry_price
-                            pnl = shares * (sell_price - entry_price)
+                            pnl = shares * (exit_price - entry_price)
                             pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
                             actual_result = 'WIN' if pnl >= 0 else 'LOSS'
                             c_close.execute('''
                                 UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
                                 WHERE id = ?
-                            ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
+                            ''', (datetime.now().isoformat(), actual_result, exit_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
+                            close_type = trade_type if trade_type in ('REDEEM', 'MERGE') else 'SELL'
                             mode_label_close = 'MOCK' if mock_mode else 'LIVE'
-                            log_event('ENGINE', actual_result, f'[{mode_label_close}] Auto-closed position: {market_title[:50]}',
-                                      f'Entry: {entry_price:.4f} Exit: {sell_price:.4f} Shares: {shares:.2f} PnL: ${pnl:.2f}')
+                            log_event('ENGINE', actual_result,
+                                      f'[{mode_label_close}|{close_type}] Closed position: {market_title[:50]}',
+                                      f'Entry: {entry_price:.4f} Exit: {exit_price:.4f} Shares: {shares:.2f} PnL: ${pnl:.2f}')
                         conn_close.commit()
                         conn_close.close()
-                        # Advance timestamp and continue (don't open a new SELL copy trade)
+                        # Advance timestamp and skip (don't open a new copy trade for close signals)
                         ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
-                    conn_close.close()
+                    else:
+                        # No matching open positions found - if REDEEM, check all open for this condition_id
+                        # (outcome might not match exactly due to casing)
+                        if trade_type == 'REDEEM':
+                            c_close.execute('''
+                                SELECT id, price, our_size, outcome FROM copy_trades
+                                WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'
+                                ORDER BY executed_at ASC
+                            ''', (trade['condition_id'],))
+                            all_open = [dict(r) for r in c_close.fetchall()]
+                            if all_open:
+                                # The redeemed outcome won (exit 1.0), non-redeemed lost (exit 0.0)
+                                redeemed_outcome = (trade.get('outcome') or '').lower()
+                                for op in all_open:
+                                    entry_price = float(op.get('price') or 0)
+                                    op_size = float(op.get('our_size') or 0)
+                                    op_outcome = (op.get('outcome') or '').lower()
+                                    if entry_price <= 0 or op_size <= 0:
+                                        continue
+                                    # If our position's outcome matches the redeemed one, we won
+                                    if op_outcome == redeemed_outcome:
+                                        exit_price = 1.0
+                                    else:
+                                        exit_price = 0.0
+                                    shares = op_size / entry_price
+                                    pnl = shares * (exit_price - entry_price)
+                                    pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
+                                    actual_result = 'WIN' if pnl >= 0 else 'LOSS'
+                                    c_close.execute('''
+                                        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+                                        WHERE id = ?
+                                    ''', (datetime.now().isoformat(), actual_result, exit_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
+                                    mode_label_close = 'MOCK' if mock_mode else 'LIVE'
+                                    log_event('ENGINE', actual_result,
+                                              f'[{mode_label_close}|REDEEM] Resolved: {market_title[:50]}',
+                                              f'Our: {op.get("outcome","")} Redeemed: {trade.get("outcome","")} Exit: {exit_price} PnL: ${pnl:.2f}')
+                                conn_close.commit()
+                        conn_close.close()
+                        # Advance timestamp for close signals even if no positions matched
+                        ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                        config[ts_key] = trade['timestamp']
+                        save_config(config)
+                        continue
 
                 if mock_mode:
                     success, response, our_size = execute_mock_trade(trade, config)
