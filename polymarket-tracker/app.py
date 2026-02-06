@@ -23,7 +23,21 @@ except ImportError:
 app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
-ALCHEMY_API_KEY = os.environ.get('ALCHEMY_API_KEY', '')
+
+def _resolve_alchemy_key():
+    """Read Alchemy API key from env var first, then config.json fallback."""
+    key = os.environ.get('ALCHEMY_API_KEY', '')
+    if not key:
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                key = json.load(f).get('alchemy_api_key', '')
+            if key:
+                os.environ['ALCHEMY_API_KEY'] = key  # propagate to fetcher module
+        except Exception:
+            pass
+    return key
+
+ALCHEMY_API_KEY = _resolve_alchemy_key()
 
 # ---- Serialised DB write lock (prevents "database is locked") ----
 _db_write_lock = threading.Lock()

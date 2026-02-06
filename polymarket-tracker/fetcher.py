@@ -19,9 +19,21 @@ DATABASE = 'polymarket_trades.db'
 _db_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Alchemy configuration
+# Alchemy configuration (env var first, then config.json fallback)
 # ---------------------------------------------------------------------------
-ALCHEMY_API_KEY = os.environ.get('ALCHEMY_API_KEY', '')
+def _resolve_alchemy_key():
+    key = os.environ.get('ALCHEMY_API_KEY', '')
+    if not key:
+        try:
+            with open('config.json', 'r') as f:
+                key = json.load(f).get('alchemy_api_key', '')
+            if key:
+                os.environ['ALCHEMY_API_KEY'] = key
+        except Exception:
+            pass
+    return key
+
+ALCHEMY_API_KEY = _resolve_alchemy_key()
 ALCHEMY_POLYGON_URL = f'https://polygon-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}'
 
 # Polymarket contract addresses on Polygon
