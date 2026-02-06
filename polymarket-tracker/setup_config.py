@@ -8,7 +8,6 @@ Usage:
 """
 import json
 import os
-import getpass
 
 CONFIG_FILE = 'config.json'
 
@@ -73,7 +72,7 @@ def setup():
     print("--- Wallet Configuration ---")
     print("Get your private key from: https://reveal.polymarket.com")
     print()
-    pk = getpass.getpass("  Private Key (hidden): ").strip()
+    pk = input("  Private Key: ").strip()
     if not pk:
         print("ERROR: Private key is required.")
         return
