@@ -838,6 +838,9 @@ _market_metadata_cache = {}  # condition_id -> {end_date, outcomes, description,
 
 def get_market_end_date(condition_id):
     """Fetch end date for a market from Gamma API. Cached."""
+    if not condition_id or not condition_id.strip():
+        return ''
+    condition_id = condition_id.strip()
     if condition_id in _market_end_date_cache:
         return _market_end_date_cache[condition_id]
     # Also populate metadata cache
@@ -847,56 +850,80 @@ def get_market_end_date(condition_id):
 
 def get_market_metadata(condition_id):
     """Fetch full market metadata from Gamma API. Cached."""
+    if not condition_id or not condition_id.strip():
+        return None
+    condition_id = condition_id.strip()
     if condition_id in _market_metadata_cache:
         return _market_metadata_cache[condition_id]
     try:
+        # Always query without closed filter - short-duration markets (BTC Up/Down) close fast
+        print(f"  [gamma] Fetching metadata for cid={condition_id[:30]}...")
         resp = req.get(
             'https://gamma-api.polymarket.com/markets',
-            params={'condition_id': condition_id, 'closed': 'false'},
-            timeout=10
+            params={'condition_id': condition_id},
+            timeout=15
         )
+        print(f"  [gamma] Response status={resp.status_code}, content_length={len(resp.text)}")
         markets = []
         if resp.status_code == 200:
-            markets = resp.json()
+            data = resp.json()
+            if isinstance(data, list):
+                markets = data
+            elif isinstance(data, dict):
+                markets = [data]
+
         if not markets:
-            # Try closed markets too
-            resp2 = req.get(
+            print(f"  [gamma] No market found for condition_id={condition_id[:20]}... Trying with slug fallback...")
+            # Some condition_ids might need different query format
+            # Try stripping 0x prefix
+            alt_cid = condition_id[2:] if condition_id.startswith('0x') else '0x' + condition_id
+            resp3 = req.get(
                 'https://gamma-api.polymarket.com/markets',
-                params={'condition_id': condition_id},
+                params={'condition_id': alt_cid},
                 timeout=10
             )
-            if resp2.status_code == 200:
-                markets = resp2.json()
+            if resp3.status_code == 200:
+                data3 = resp3.json()
+                if isinstance(data3, list) and data3:
+                    markets = data3
+                    print(f"  [gamma] Found via alt_cid={alt_cid[:20]}")
+            if not markets:
+                print(f"  [gamma] No market found at all for {condition_id[:20]}")
+                # Cache empty so we don't retry
+                _market_end_date_cache[condition_id] = ''
+                return None
 
-        if markets and len(markets) > 0:
-            m = markets[0]
-            end_date = m.get('endDate') or m.get('end_date_iso') or ''
-            outcomes_raw = m.get('outcomes', '[]')
-            outcome_prices_raw = m.get('outcomePrices', '[]')
-            try:
-                outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
-            except Exception:
-                outcomes = []
-            try:
-                outcome_prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
-            except Exception:
-                outcome_prices = []
+        m = markets[0]
+        end_date = m.get('endDate') or m.get('end_date_iso') or ''
+        print(f"  [end_date] Found market: question={m.get('question','')[:60]}, endDate={end_date}, closed={m.get('closed')}")
 
-            meta = {
-                'end_date': end_date,
-                'question': m.get('question', ''),
-                'description': m.get('description', ''),
-                'outcomes': outcomes,
-                'outcome_prices': [float(p) for p in outcome_prices] if outcome_prices else [],
-                'start_date': m.get('startDate') or m.get('start_date_iso') or '',
-                'event_start_time': m.get('eventStartTime') or '',
-                'active': m.get('active', False),
-                'closed': m.get('closed', False),
-            }
-            _market_end_date_cache[condition_id] = end_date
-            _market_metadata_cache[condition_id] = meta
-            return meta
+        outcomes_raw = m.get('outcomes', '[]')
+        outcome_prices_raw = m.get('outcomePrices', '[]')
+        try:
+            outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else (outcomes_raw or [])
+        except Exception:
+            outcomes = []
+        try:
+            outcome_prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else (outcome_prices_raw or [])
+        except Exception:
+            outcome_prices = []
+
+        meta = {
+            'end_date': end_date,
+            'question': m.get('question', ''),
+            'description': m.get('description', ''),
+            'outcomes': outcomes,
+            'outcome_prices': [float(p) for p in outcome_prices] if outcome_prices else [],
+            'start_date': m.get('startDate') or m.get('start_date_iso') or '',
+            'event_start_time': m.get('eventStartTime') or m.get('gameStartTime') or '',
+            'active': m.get('active', False),
+            'closed': m.get('closed', False),
+        }
+        _market_end_date_cache[condition_id] = end_date
+        _market_metadata_cache[condition_id] = meta
+        return meta
     except Exception as e:
+        print(f"  [end_date] ERROR fetching metadata for {condition_id[:20]}: {e}")
         log_event('ENGINE', 'WARN', 'Market metadata fetch error', str(e))
     return None
 
@@ -1263,35 +1290,95 @@ def get_trades():
 
     # Collect unique condition_ids we need end_dates for
     cids_to_fetch = set()
+    cids_with = 0
+    cids_without = 0
     for t in trades:
         cid = t.get('condition_id')
-        if cid and cid not in _market_end_date_cache:
-            cids_to_fetch.add(cid)
+        if cid:
+            if cid not in _market_end_date_cache:
+                cids_to_fetch.add(cid)
+                cids_without += 1
+            else:
+                cids_with += 1
+
+    print(f"  [trades API] {len(trades)} trades, {cids_with} cached end_dates, {cids_without} missing, fetching {min(len(cids_to_fetch),10)}")
 
     # Fetch missing end_dates in bulk (up to 10 to avoid slow responses)
     for cid in list(cids_to_fetch)[:10]:
         try:
-            get_market_end_date(cid)
-        except Exception:
-            pass
+            ed = get_market_end_date(cid)
+            print(f"  [trades API] Fetched end_date for {cid[:20]}: {ed}")
+        except Exception as e:
+            print(f"  [trades API] Error fetching end_date for {cid[:20]}: {e}")
 
     # Enrich trades with end_date from cache
+    enriched = 0
     for t in trades:
         cid = t.get('condition_id')
         if cid and cid in _market_end_date_cache:
             t['end_date'] = _market_end_date_cache[cid]
+            enriched += 1
         else:
             t['end_date'] = ''
 
+    print(f"  [trades API] Enriched {enriched}/{len(trades)} trades with end_date")
     return jsonify(trades)
+
+
+@app.route('/api/market-end-date-by-slug/<slug>', methods=['GET'])
+def api_get_market_end_date_by_slug(slug):
+    """Fallback: fetch end date by market slug."""
+    try:
+        resp = req.get('https://gamma-api.polymarket.com/markets',
+                       params={'slug': slug}, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()
+            markets = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+            if markets:
+                m = markets[0]
+                end_date = m.get('endDate') or m.get('end_date_iso') or ''
+                cid = m.get('conditionId') or m.get('condition_id') or ''
+                if cid and end_date:
+                    _market_end_date_cache[cid] = end_date
+                return jsonify({'slug': slug, 'end_date': end_date, 'condition_id': cid,
+                                'question': m.get('question', '')})
+    except Exception as e:
+        print(f"  [slug] Error: {e}")
+    return jsonify({'slug': slug, 'end_date': ''})
+
+
+@app.route('/api/debug/trades-sample', methods=['GET'])
+def debug_trades_sample():
+    """Debug endpoint: show a few trades with their condition_ids and end_date status."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''SELECT id, title, outcome, side, condition_id, timestamp
+                      FROM trades ORDER BY id DESC LIMIT 5''')
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    result = []
+    for r in rows:
+        cid = r.get('condition_id', '')
+        cached = cid in _market_end_date_cache if cid else False
+        cached_val = _market_end_date_cache.get(cid, '') if cid else ''
+        result.append({
+            **r,
+            'cid_present': bool(cid),
+            'cid_length': len(cid) if cid else 0,
+            'end_date_cached': cached,
+            'end_date_value': cached_val,
+            'cache_size': len(_market_end_date_cache),
+        })
+    return jsonify(result)
 
 
 @app.route('/api/market-end-date/<condition_id>', methods=['GET'])
 def api_get_market_end_date(condition_id):
     """Fetch and return end date + metadata for a market by condition_id."""
+    print(f"  [API] /api/market-end-date/{condition_id[:20]}...")
     meta = get_market_metadata(condition_id)
     if meta:
-        return jsonify({
+        result = {
             'condition_id': condition_id,
             'end_date': meta.get('end_date', ''),
             'outcomes': meta.get('outcomes', []),
@@ -1299,7 +1386,10 @@ def api_get_market_end_date(condition_id):
             'question': meta.get('question', ''),
             'start_date': meta.get('start_date', ''),
             'event_start_time': meta.get('event_start_time', ''),
-        })
+        }
+        print(f"  [API] Returning end_date={result['end_date']} for {meta.get('question','')[:50]}")
+        return jsonify(result)
+    print(f"  [API] No metadata found for {condition_id[:20]}")
     return jsonify({'condition_id': condition_id, 'end_date': ''})
 
 

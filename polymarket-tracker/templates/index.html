@@ -581,8 +581,8 @@
             const endDate=t.end_date||'';
             const timerHtml=endDate
                 ?`<div data-end-date="${endDate}" style="line-height:1.3;">${formatTimer(endDate)}</div>`
-                :(t.condition_id?`<div data-cid="${t.condition_id}" style="color:var(--text-dim);font-size:10px;">loading...</div>`
-                :'<div style="font-size:10px;color:var(--text-dim);">--</div>');
+                :(t.condition_id?`<div data-cid="${t.condition_id}" data-slug="${t.slug||''}" style="color:var(--text-dim);font-size:10px;">loading...</div>`
+                :'<div style="font-size:10px;color:var(--text-dim);" title="No condition_id">--</div>');
             const sideUp=(t.side||'').toUpperCase();
             const sideBadge=sideUp==='BUY'?'<span class="side-buy-badge">BUY</span>':sideUp==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideUp||'--'}</span>`;
             return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome"><span class="tier-badge tier-${tier}">${tier}</span> ${dirBadge}</div></div></div></td><td>${bet}</td><td>${sideBadge}</td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
@@ -593,35 +593,49 @@
     // Auto-fetch end dates for trades missing them
     const _endDateFetching = new Set();
     const _marketMetaCache = {}; // cid -> {end_date, outcomes, outcome_prices, ...}
+    function _applyEndDate(cid,endDate,meta) {
+        _marketMetaCache[cid] = meta||{end_date:endDate};
+        document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{
+            el.setAttribute('data-end-date',endDate);
+            el.removeAttribute('data-cid');
+            el.style.lineHeight='1.3';
+            el.innerHTML=formatTimer(endDate);
+        });
+        allTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=endDate;}});
+        allCopyTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=endDate;}});
+        console.log('[v0] Timer set for cid',cid.slice(0,15),'end_date=',endDate);
+    }
     async function fetchEndDate(el,cid) {
         if(_endDateFetching.has(cid)) return;
         _endDateFetching.add(cid);
         if(el) el.textContent='loading...';
         try{
-            const r=await fetch('/api/market-end-date/'+cid);
+            // Try by condition_id first
+            const r=await fetch('/api/market-end-date/'+encodeURIComponent(cid));
             const d=await r.json();
-            console.log('[v0] fetchEndDate response for',cid,':',d);
+            console.log('[v0] fetchEndDate cid response:',cid.slice(0,15),d.end_date||'EMPTY');
             if(d.end_date){
-                // Cache metadata
-                _marketMetaCache[cid] = d;
-                // Update all matching elements in the DOM
-                document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{
-                    el.setAttribute('data-end-date',d.end_date);
-                    el.removeAttribute('data-cid');
-                    el.style.lineHeight='1.3';
-                    el.innerHTML=formatTimer(d.end_date);
-                });
-                // Update allTrades + allCopyTrades caches
-                allTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
-                allCopyTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
-                console.log('[v0] Updated timer for cid',cid,'end_date=',d.end_date);
-            }else{
-                document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{el.textContent='N/A';});
-                console.log('[v0] No end_date for cid',cid);
+                _applyEndDate(cid,d.end_date,d);
+            } else {
+                // Fallback: try by slug from trade data
+                const trade=allTrades.find(t=>t.condition_id===cid) || allCopyTrades.find(t=>t.condition_id===cid);
+                if(trade && trade.slug){
+                    console.log('[v0] Trying slug fallback:',trade.slug);
+                    const r2=await fetch('/api/market-end-date-by-slug/'+encodeURIComponent(trade.slug));
+                    const d2=await r2.json();
+                    console.log('[v0] Slug fallback result:',d2.end_date||'EMPTY');
+                    if(d2.end_date){
+                        _applyEndDate(cid,d2.end_date,d2);
+                    } else {
+                        document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{el.textContent='N/A';});
+                    }
+                } else {
+                    document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{el.textContent='N/A';});
+                }
             }
         }catch(e){
             document.querySelectorAll('[data-cid="'+cid+'"]').forEach(el=>{el.textContent='err';});
-            console.error('[v0] fetchEndDate error for',cid,e);
+            console.error('[v0] fetchEndDate error:',cid.slice(0,15),e);
         }
         _endDateFetching.delete(cid);
     }
@@ -858,6 +872,9 @@
     fetchStats();fetchTraders();fetchTrades();loadConfig();fetchCopyTrades();fetchLog();
     connectSSE();
     setInterval(loadConfig,30000);
+    // Extra end-date fetch passes to catch anything missed
+    setTimeout(autoFetchEndDates, 3000);
+    setTimeout(autoFetchEndDates, 8000);
 </script>
 </body>
 </html>
