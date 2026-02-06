@@ -128,10 +128,21 @@ def init_db():
             original_trade_id INTEGER,
             trader_name TEXT,
             market_title TEXT,
+            market_slug TEXT,
+            event_slug TEXT,
+            condition_id TEXT,
+            icon TEXT,
+            outcome TEXT,
             side TEXT,
             original_size REAL,
             our_size REAL,
             price REAL,
+            current_price REAL,
+            pnl REAL DEFAULT 0,
+            pnl_pct REAL DEFAULT 0,
+            closed INTEGER DEFAULT 0,
+            closed_at TEXT,
+            result TEXT DEFAULT 'OPEN',
             status TEXT,
             mock INTEGER DEFAULT 0,
             executed_at TEXT,
@@ -169,8 +180,15 @@ def init_db():
         ]),
         ('copy_trades', [
             ('trader_name', 'TEXT', "''"), ('market_title', 'TEXT', "''"),
+            ('market_slug', 'TEXT', "''"), ('event_slug', 'TEXT', "''"),
+            ('condition_id', 'TEXT', "''"), ('icon', 'TEXT', "''"),
+            ('outcome', 'TEXT', "''"),
             ('side', 'TEXT', "''"), ('original_size', 'REAL', '0'),
             ('our_size', 'REAL', '0'), ('price', 'REAL', '0'),
+            ('current_price', 'REAL', '0'),
+            ('pnl', 'REAL', '0'), ('pnl_pct', 'REAL', '0'),
+            ('closed', 'INTEGER', '0'), ('closed_at', 'TEXT', 'NULL'),
+            ('result', 'TEXT', "'OPEN'"),
             ('mock', 'INTEGER', '0'),
         ]),
     ]:
@@ -442,17 +460,21 @@ def copy_trading_loop():
                 else:
                     success, response, our_size = execute_live_trade(client, trade, config)
 
-                # Record in DB
+                # Record in DB with market metadata
                 conn = get_db()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, side, original_size, our_size, price, status, mock, executed_at, response)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, executed_at, response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    trade['id'], trader_name, market_title, side_str,
+                    trade['id'], trader_name, market_title,
+                    trade.get('slug', ''), trade.get('event_slug', ''),
+                    trade.get('condition_id', ''), trade.get('icon', ''),
+                    trade.get('outcome', ''), side_str,
                     trade_size, our_size, trade.get('price', 0),
                     'SUCCESS' if success else 'FAILED',
                     1 if mock_mode else 0,
+                    'OPEN' if side_str == 'BUY' else 'CLOSED',
                     datetime.now().isoformat(), response
                 ))
                 conn.commit()
@@ -733,12 +755,85 @@ def get_copy_trades():
     conn = get_db()
     cursor = conn.cursor()
     try:
-        cursor.execute('SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 50')
+        cursor.execute('SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 100')
         trades = [dict(row) for row in cursor.fetchall()]
     except Exception:
         trades = []
     conn.close()
     return jsonify(trades)
+
+
+@app.route('/api/copy-trades/summary', methods=['GET'])
+def get_copy_trades_summary():
+    """Returns win/loss summary for closed copy trades"""
+    conn = get_db()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE status='SUCCESS'")
+        total = cursor.fetchone()['c']
+        cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE result='WIN'")
+        wins = cursor.fetchone()['c']
+        cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE result='LOSS'")
+        losses = cursor.fetchone()['c']
+        cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE result='OPEN'")
+        open_count = cursor.fetchone()['c']
+        cursor.execute("SELECT SUM(pnl) as total_pnl FROM copy_trades WHERE result IN ('WIN','LOSS')")
+        row = cursor.fetchone()
+        total_pnl = round(row['total_pnl'] or 0, 2)
+        cursor.execute("SELECT SUM(our_size) as total_invested FROM copy_trades WHERE status='SUCCESS'")
+        total_invested = round(cursor.fetchone()['total_invested'] or 0, 2)
+        cursor.execute("SELECT SUM(pnl) as p FROM copy_trades WHERE result='WIN'")
+        total_win_pnl = round((cursor.fetchone()['p'] or 0), 2)
+        cursor.execute("SELECT SUM(pnl) as p FROM copy_trades WHERE result='LOSS'")
+        total_loss_pnl = round((cursor.fetchone()['p'] or 0), 2)
+    except Exception:
+        total = wins = losses = open_count = 0
+        total_pnl = total_invested = total_win_pnl = total_loss_pnl = 0
+    conn.close()
+    win_rate = round(wins / (wins + losses) * 100, 1) if (wins + losses) > 0 else 0
+    return jsonify({
+        'total': total, 'wins': wins, 'losses': losses, 'open': open_count,
+        'win_rate': win_rate, 'total_pnl': total_pnl, 'total_invested': total_invested,
+        'total_win_pnl': total_win_pnl, 'total_loss_pnl': total_loss_pnl,
+    })
+
+
+@app.route('/api/copy-trades/<int:trade_id>/close', methods=['POST'])
+def close_copy_trade(trade_id):
+    """Manually close a copy trade with a result"""
+    data = request.json
+    result = data.get('result', 'WIN')  # WIN or LOSS
+    current_price = data.get('current_price', 0)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM copy_trades WHERE id = ?', (trade_id,))
+    trade = cursor.fetchone()
+    if not trade:
+        conn.close()
+        return jsonify({'error': 'Trade not found'}), 404
+    td = dict(trade)
+
+    entry_price = td.get('price', 0) or 0
+    our_size = td.get('our_size', 0) or 0
+    side = (td.get('side', '') or '').upper()
+
+    # Calculate PnL
+    if side == 'BUY':
+        pnl = (float(current_price) - float(entry_price)) * float(our_size)
+    else:
+        pnl = (float(entry_price) - float(current_price)) * float(our_size)
+
+    pnl_pct = (pnl / float(our_size) * 100) if our_size > 0 else 0
+    actual_result = 'WIN' if pnl >= 0 else 'LOSS'
+
+    cursor.execute('''
+        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+        WHERE id = ?
+    ''', (datetime.now().isoformat(), actual_result, current_price, round(pnl, 4), round(pnl_pct, 2), trade_id))
+    conn.commit()
+    conn.close()
+    log_event('ENGINE', actual_result, f'Trade closed: {td.get("market_title", "")[:50]}', f'PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
+    return jsonify({'success': True, 'pnl': round(pnl, 4), 'result': actual_result})
 
 
 @app.route('/api/logs', methods=['GET'])
