@@ -557,13 +557,18 @@ def execute_live_trade(client, trade, config):
 # ============================================
 
 GAMMA_MARKETS_API = 'https://gamma-api.polymarket.com/markets'
-CLOB_MARKET_API = 'https://clob.polymarket.com/markets'
 
 def check_resolved_markets():
     """
     Check all OPEN copy trades and see if their markets have resolved.
-    If resolved, auto-close the position with correct PnL.
-    Works for both mock and live modes.
+    Uses Gamma API (condition_ids param) to get market resolution status.
+    On Polymarket, when a market resolves:
+      - 'closed' becomes true
+      - 'outcomePrices' shows final prices e.g. "[1, 0]" meaning first outcome won
+      - 'outcomes' shows the labels e.g. '["Up", "Down"]'
+    PnL: on Polymarket price is 0-1 probability, our_size is USD spent.
+      shares_bought = our_size / entry_price
+      pnl = shares_bought * (exit_price - entry_price) = our_size * (exit_price / entry_price - 1)
     """
     try:
         conn = get_db()
@@ -580,55 +585,61 @@ def check_resolved_markets():
             return 0
 
         # Group by condition_id to batch API calls
-        condition_ids = list(set(t['condition_id'] for t in open_trades))
+        unique_cids = list(set(t['condition_id'] for t in open_trades))
         closed_count = 0
 
-        for cid in condition_ids:
+        log_event('ENGINE', 'INFO', f'Resolution checker: checking {len(unique_cids)} market(s) with {len(open_trades)} open position(s)')
+
+        for cid in unique_cids:
             try:
-                # Query Gamma API for market status
-                resp = req.get(GAMMA_MARKETS_API, params={'condition_id': cid}, timeout=10)
+                # Gamma API uses 'condition_ids' (plural) as the query param
+                resp = req.get(GAMMA_MARKETS_API, params={'condition_ids': cid, 'limit': 1}, timeout=10)
                 if resp.status_code != 200:
+                    log_event('ENGINE', 'WARN', f'Gamma API returned {resp.status_code} for {cid[:24]}')
                     continue
 
                 markets = resp.json()
                 if not markets:
+                    # Also try the slug-based lookup as fallback
+                    log_event('ENGINE', 'WARN', f'No market found for condition_id {cid[:24]}')
                     continue
 
                 market = markets[0] if isinstance(markets, list) else markets
 
                 # Check if market has resolved
-                # Gamma API fields: 'closed', 'resolved', 'resolvedAt', 'resolutionSource'
-                is_closed = market.get('closed', False) or market.get('resolved', False)
+                # 'closed' = true means market is settled
+                is_closed = market.get('closed', False)
                 if not is_closed:
-                    # Also check 'active' field (some markets use this)
-                    is_active = market.get('active', True)
-                    if is_active:
-                        continue
+                    continue
 
-                # Market is resolved - determine winning outcome
-                # 'outcomePrices' is like "[1, 0]" or "[0, 1]" for binary markets
+                # Market is closed -- determine winning outcome
+                # 'outcomePrices' is a JSON string like "[1, 0]" or "[0, 1]"
+                # 'outcomes' is a JSON string like '["Up", "Down"]' or '["Yes", "No"]'
                 outcome_prices_str = market.get('outcomePrices', '')
-                outcomes_list = market.get('outcomes', '')
+                outcomes_str = market.get('outcomes', '')
 
-                # Parse outcome prices
+                # Parse both
                 resolution_prices = {}
                 try:
-                    if outcome_prices_str:
-                        if isinstance(outcome_prices_str, str):
-                            prices = json.loads(outcome_prices_str)
-                        else:
-                            prices = outcome_prices_str
-
-                        if isinstance(outcomes_list, str):
-                            outcomes_parsed = json.loads(outcomes_list)
-                        else:
-                            outcomes_parsed = outcomes_list or []
+                    if outcome_prices_str and outcomes_str:
+                        prices = json.loads(outcome_prices_str) if isinstance(outcome_prices_str, str) else outcome_prices_str
+                        outcomes_parsed = json.loads(outcomes_str) if isinstance(outcomes_str, str) else (outcomes_str or [])
 
                         for i, price in enumerate(prices):
                             if i < len(outcomes_parsed):
-                                resolution_prices[outcomes_parsed[i].lower()] = float(price)
-                except (json.JSONDecodeError, ValueError, TypeError):
-                    pass
+                                # Store both original case and lowercase for matching
+                                outcome_name = outcomes_parsed[i]
+                                resolution_prices[outcome_name.lower()] = float(price)
+                                resolution_prices[outcome_name] = float(price)
+
+                        log_event('ENGINE', 'INFO', f'Market resolved: {market.get("question", cid[:24])} | outcomes={outcomes_parsed} prices={prices}')
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    log_event('ENGINE', 'WARN', f'Failed to parse resolution for {cid[:24]}: {e}')
+                    continue
+
+                if not resolution_prices:
+                    log_event('ENGINE', 'WARN', f'No resolution prices for {cid[:24]}: outcomePrices={outcome_prices_str}')
+                    continue
 
                 # Close all OPEN trades for this condition_id
                 trades_for_cid = [t for t in open_trades if t['condition_id'] == cid]
@@ -638,31 +649,45 @@ def check_resolved_markets():
                 for trade in trades_for_cid:
                     entry_price = float(trade.get('price') or 0)
                     our_size = float(trade.get('our_size') or 0)
-                    trade_outcome = (trade.get('outcome') or '').lower()
+                    trade_outcome = (trade.get('outcome') or '').strip()
                     side = (trade.get('side') or '').upper()
 
-                    # Determine exit price from resolution
-                    # If the outcome the trade was on resolved to 1 = WIN, 0 = LOSS
-                    exit_price = resolution_prices.get(trade_outcome, None)
+                    if entry_price <= 0 or our_size <= 0:
+                        continue
 
+                    # Look up the resolution price for our outcome
+                    # Try exact match first, then lowercase
+                    exit_price = resolution_prices.get(trade_outcome)
                     if exit_price is None:
-                        # Fallback: check if any outcome settled at 1
-                        # If our outcome isn't the winner, it resolved to 0
-                        if resolution_prices:
-                            winning_outcomes = [k for k, v in resolution_prices.items() if v >= 0.99]
-                            if trade_outcome in winning_outcomes:
-                                exit_price = 1.0
-                            else:
-                                exit_price = 0.0
+                        exit_price = resolution_prices.get(trade_outcome.lower())
+                    if exit_price is None:
+                        # Fallback: if only 2 outcomes and we can't match, check which one resolved to 1
+                        winning = [k for k, v in resolution_prices.items() if v >= 0.99]
+                        losing = [k for k, v in resolution_prices.items() if v <= 0.01]
+                        if trade_outcome.lower() in [w.lower() for w in winning]:
+                            exit_price = 1.0
+                        elif trade_outcome.lower() in [l.lower() for l in losing]:
+                            exit_price = 0.0
                         else:
-                            # Cannot determine, skip
+                            log_event('ENGINE', 'WARN',
+                                      f'Cannot match outcome "{trade_outcome}" to resolution prices',
+                                      f'Available: {list(resolution_prices.keys())}')
                             continue
 
-                    # Calculate PnL
+                    # Calculate PnL correctly for Polymarket:
+                    # You buy shares at entry_price, each share pays exit_price on resolution
+                    # shares = our_size / entry_price (how many shares we got for our USD)
+                    # value_at_resolution = shares * exit_price
+                    # pnl = value_at_resolution - our_size
                     if side == 'BUY':
-                        pnl = (exit_price - entry_price) * our_size
+                        shares = our_size / entry_price
+                        value_at_exit = shares * exit_price
+                        pnl = value_at_exit - our_size
                     else:
-                        pnl = (entry_price - exit_price) * our_size
+                        # SELL: we sold shares at entry_price, they resolved at exit_price
+                        # profit = entry_price - exit_price per share
+                        shares = our_size / entry_price
+                        pnl = our_size - (shares * exit_price)
 
                     pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
                     actual_result = 'WIN' if pnl >= 0 else 'LOSS'
@@ -675,17 +700,17 @@ def check_resolved_markets():
                     mode_str = 'MOCK' if trade.get('mock') else 'LIVE'
                     log_event('ENGINE', actual_result,
                               f'[{mode_str}] Market resolved: {trade.get("market_title", "")[:50]}',
-                              f'Outcome: {trade.get("outcome","")} resolved @ {exit_price:.2f} | Entry: {entry_price:.2f} | PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
+                              f'Outcome "{trade_outcome}" => {exit_price:.2f} | Entry: {entry_price:.4f} | Shares: {shares:.2f} | PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
                     closed_count += 1
 
                 conn.commit()
                 conn.close()
 
-                # Small delay between API calls
-                time.sleep(0.3)
+                # Small delay between API calls to avoid rate limiting
+                time.sleep(0.5)
 
             except Exception as e:
-                log_event('ENGINE', 'WARN', f'Resolution check failed for {cid[:16]}', str(e))
+                log_event('ENGINE', 'WARN', f'Resolution check failed for {cid[:24]}', str(e))
                 continue
 
         if closed_count > 0:
@@ -882,15 +907,20 @@ def copy_trading_loop():
                         for op in open_positions:
                             entry_price = float(op.get('price') or 0)
                             op_size = float(op.get('our_size') or 0)
-                            pnl = (sell_price - entry_price) * op_size
+                            if entry_price <= 0 or op_size <= 0:
+                                continue
+                            # Correct PnL: shares = usd_spent / entry_price, pnl = shares * (sell_price - entry_price)
+                            shares = op_size / entry_price
+                            pnl = shares * (sell_price - entry_price)
                             pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
                             actual_result = 'WIN' if pnl >= 0 else 'LOSS'
                             c_close.execute('''
                                 UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
                                 WHERE id = ?
                             ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
-                            log_event('ENGINE', actual_result, f'[MOCK] Auto-closed position: {market_title[:50]}',
-                                      f'Entry: {entry_price:.2f} Exit: {sell_price:.2f} PnL: ${pnl:.2f}')
+                            mode_label_close = 'MOCK' if mock_mode else 'LIVE'
+                            log_event('ENGINE', actual_result, f'[{mode_label_close}] Auto-closed position: {market_title[:50]}',
+                                      f'Entry: {entry_price:.4f} Exit: {sell_price:.4f} Shares: {shares:.2f} PnL: ${pnl:.2f}')
                         conn_close.commit()
                         conn_close.close()
                         # Advance timestamp and continue (don't open a new SELL copy trade)
@@ -1294,17 +1324,22 @@ def close_copy_trade(trade_id):
         return jsonify({'error': 'Trade not found'}), 404
     td = dict(trade)
 
-    entry_price = td.get('price', 0) or 0
-    our_size = td.get('our_size', 0) or 0
+    entry_price = float(td.get('price', 0) or 0)
+    our_size = float(td.get('our_size', 0) or 0)
     side = (td.get('side', '') or '').upper()
+    cp = float(current_price or 0)
 
-    # Calculate PnL
-    if side == 'BUY':
-        pnl = (float(current_price) - float(entry_price)) * float(our_size)
+    # Calculate PnL: shares = usd / entry_price, pnl = shares * (exit - entry)
+    if entry_price > 0 and our_size > 0:
+        shares = our_size / entry_price
+        if side == 'BUY':
+            pnl = shares * (cp - entry_price)
+        else:
+            pnl = our_size - (shares * cp)
     else:
-        pnl = (float(entry_price) - float(current_price)) * float(our_size)
+        pnl = 0
 
-    pnl_pct = (pnl / float(our_size) * 100) if our_size > 0 else 0
+    pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
     actual_result = 'WIN' if pnl >= 0 else 'LOSS'
 
     cursor.execute('''
