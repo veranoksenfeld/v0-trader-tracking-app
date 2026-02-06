@@ -192,7 +192,9 @@
         .bet-no { background:rgba(239,68,68,0.18); color:var(--red); border:1px solid rgba(239,68,68,0.25); }
         .bet-unknown { background:rgba(161,161,170,0.1); color:var(--text-dim); border:1px solid transparent; }
         .bet-arrow { font-size:14px; line-height:1; font-weight:900; }
-        .timer-cell { min-width:110px; }
+        .timer-cell { min-width:120px; }
+        .side-buy-badge { display:inline-block; padding:3px 8px; border-radius:5px; font-size:11px; font-weight:700; background:rgba(34,197,94,0.15); color:var(--green); border:1px solid rgba(34,197,94,0.2); }
+        .side-sell-badge { display:inline-block; padding:3px 8px; border-radius:5px; font-size:11px; font-weight:700; background:rgba(239,68,68,0.15); color:var(--red); border:1px solid rgba(239,68,68,0.2); }
         .closed-section { margin-top:16px; }
         .closed-summary-row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); transition:background .1s; }
         .closed-summary-row:hover { background:var(--bg-hover); }
@@ -389,11 +391,17 @@
             const cb=t.copy_trading_enabled?'<span class="badge badge-copy">COPY</span>':'';
             const wr=t.win_rate||0;
             const wrHtml=wr>0?`<span style="color:${wrColor(wr)};font-size:10px;font-weight:600;">${wr}% WR</span>`:'';
-            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
+            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="btn btn-sm btn-outline" style="padding:2px 6px;font-size:9px;margin-right:4px;" onclick="event.stopPropagation();fetchTraderTrades(${t.id})" title="Refresh trades">Fetch</button><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
         }).join('');
     }
-    async function addTrader() { const v=document.getElementById('wallet-input').value.trim(); if(!v){showToast('Enter a wallet','error');return;} try{const r=await fetch('/api/traders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet_address:v})}); const res=await r.json(); if(r.ok){showToast('Wallet added!','success');document.getElementById('wallet-input').value='';fetchTraders();fetchStats();}else showToast(res.error,'error');}catch(e){showToast('Error','error');} }
+    async function addTrader() { const v=document.getElementById('wallet-input').value.trim(); if(!v){showToast('Enter a wallet','error');return;} try{const r=await fetch('/api/traders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet_address:v})}); const res=await r.json(); if(r.ok){showToast('Wallet added - fetching trades...','success');document.getElementById('wallet-input').value='';fetchTraders();fetchStats();setTimeout(()=>{fetchTrades();fetchTraders();},3000);setTimeout(()=>{fetchTrades();fetchTraders();},8000);}else showToast(res.error,'error');}catch(e){showToast('Error','error');} }
     async function deleteTrader(id) { if(!confirm('Remove this trader?'))return; try{await fetch('/api/traders/'+id,{method:'DELETE'}); if(selectedTraderId===id){selectedTraderId=null;document.getElementById('target-detail').style.display='none';} showToast('Removed','success'); fetchTraders();fetchTrades();fetchStats();}catch(e){} }
+    async function fetchTraderTrades(id) {
+        showToast('Fetching trades...','info');
+        try{const r=await fetch('/api/traders/'+id+'/fetch',{method:'POST'}); const res=await r.json();
+        if(r.ok){showToast('Fetch started - trades will appear shortly','success'); setTimeout(()=>{fetchTrades();fetchTraders();},3000);}
+        else showToast(res.error||'Error','error');}catch(e){showToast('Fetch error','error');}
+    }
     document.getElementById('wallet-input').addEventListener('keypress',e=>{if(e.key==='Enter')addTrader();});
 
     function selectTrader(id) { if(selectedTraderId===id){selectedTraderId=null;document.getElementById('target-detail').style.display='none';}else{selectedTraderId=id;fetchTraderDetails(id);} fetchTraders();fetchTrades(); }
@@ -572,7 +580,9 @@
                 ?`<span data-end-date="${endDate}">${formatTimer(endDate)}</span>`
                 :(t.condition_id?`<span class="event-timer" data-cid="${t.condition_id}" style="color:var(--text-dim);">...</span>`
                 :'<span style="font-size:10px;color:var(--text-dim);">--</span>');
-            return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome"><span class="tier-badge tier-${tier}">${tier}</span> ${dirBadge}</div></div></div></td><td>${bet}</td><td><span class="side-${(t.side||'').toLowerCase()}">${(t.side||'').toUpperCase()}</span></td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
+            const sideUp=(t.side||'').toUpperCase();
+            const sideBadge=sideUp==='BUY'?'<span class="side-buy-badge">BUY</span>':sideUp==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideUp||'--'}</span>`;
+            return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome"><span class="tier-badge tier-${tier}">${tier}</span> ${dirBadge}</div></div></div></td><td>${bet}</td><td>${sideBadge}</td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
         }).join('');
         // Auto-fetch missing end dates
         setTimeout(autoFetchEndDates, 100);
@@ -626,17 +636,25 @@
     }
     function filterCopyTrades(f) { ctFilter=f; document.querySelectorAll('[data-ctf]').forEach(b=>b.classList.toggle('active',b.dataset.ctf===f)); renderCopyTrades(); }
     function formatTimer(endDate) {
-        if(!endDate)return'';
-        const end=new Date(endDate), now=new Date(), diff=end.getTime()-now.getTime();
-        // Format the actual end time
+        if(!endDate) return '';
+        // Parse robustly - handle ISO strings, unix timestamps, etc.
+        let end;
+        if(typeof endDate==='number') end=new Date(endDate>1e12?endDate:endDate*1000);
+        else end=new Date(endDate);
+        if(isNaN(end.getTime())) return '<span style="font-size:10px;color:var(--text-dim);">Invalid date</span>';
+
+        const now=new Date(), diff=end.getTime()-now.getTime();
+        // Format the actual end time (always show this)
         const endTimeStr=end.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
-        if(diff<=0) return `<div class="event-timer" style="color:var(--red);">Ended</div><div style="font-size:9px;color:var(--text-dim);margin-top:1px;">${endTimeStr}</div>`;
+
+        if(diff<=0) return `<div class="event-timer" style="color:var(--red);">ENDED</div><div style="font-size:9px;color:var(--text-dim);margin-top:1px;">${endTimeStr}</div>`;
+
         const d=Math.floor(diff/86400000), h=Math.floor((diff%86400000)/3600000), m=Math.floor((diff%3600000)/60000), s=Math.floor((diff%60000)/1000);
         let countdown='', color='var(--cyan)';
         if(d>0){ countdown=d+'d '+h+'h '+m+'m'; }
         else if(h>0){ countdown=h+'h '+m+'m '+s+'s'; color=h<2?'var(--yellow)':'var(--cyan)'; }
         else { countdown=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); color=m<5?'var(--red)':m<15?'var(--orange)':'var(--yellow)'; }
-        return `<div class="event-timer" style="color:${color};font-size:${d>0||h>0?'10px':'13px'};">${countdown}</div><div style="font-size:9px;color:var(--text-dim);margin-top:1px;white-space:nowrap;">${endTimeStr}</div>`;
+        return `<div class="event-timer" style="color:${color};font-size:${d>0||h>0?'11px':'14px'};font-weight:700;">${countdown}</div><div style="font-size:9px;color:var(--text-dim);margin-top:2px;white-space:nowrap;">${endTimeStr}</div>`;
     }
     function updateEventTimers() {
         document.querySelectorAll('[data-end-date]').forEach(el=>{
@@ -711,7 +729,8 @@
                 }
             }
 
-            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${betHtml}</td><td><span class="side-${(t.side||'').toLowerCase()}">${sideStr}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
+            const ctSideBadge=sideStr==='BUY'?'<span class="side-buy-badge">BUY</span>':sideStr==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideStr||'--'}</span>`;
+            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${betHtml}</td><td>${ctSideBadge}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
         }).join('')}</tbody></table>`;
         // Auto-fetch missing end dates
         setTimeout(autoFetchEndDates, 200);

@@ -1093,7 +1093,139 @@ def add_trader():
     tid = cursor.lastrowid
     conn.close()
     log_event('APP', 'INFO', f'Started tracking wallet', wallet)
+
+    # Immediately fetch trades + profile in background so they appear fast
+    def _bg_fetch():
+        try:
+            c = get_db()
+            # Fetch profile
+            profile = req.get('https://gamma-api.polymarket.com/public-profile',
+                              params={'address': wallet}, timeout=10)
+            if profile.status_code == 200:
+                p = profile.json()
+                c.execute('''UPDATE traders SET name=?, pseudonym=?, bio=?, profile_image=?,
+                    x_username=?, verified_badge=?, created_at=? WHERE id=?''',
+                    (p.get('name'), p.get('pseudonym'), p.get('bio'), p.get('profileImage'),
+                     p.get('xUsername'), 1 if p.get('verifiedBadge') else 0, p.get('createdAt'), tid))
+                c.commit()
+
+            # Fetch trades using both profile address and proxy wallet
+            addresses = [wallet]
+            if profile.status_code == 200:
+                proxy = (profile.json().get('proxyWallet') or '').lower()
+                if proxy and proxy != wallet:
+                    addresses.append(proxy)
+
+            total_new = 0
+            for addr in addresses:
+                try:
+                    r = req.get('https://data-api.polymarket.com/activity',
+                                params={'user': addr, 'type': 'TRADE', 'limit': 100}, timeout=15)
+                    if r.status_code == 200:
+                        trades = r.json()
+                        if isinstance(trades, list):
+                            for trade in trades:
+                                tx = trade.get('transactionHash')
+                                if not tx:
+                                    continue
+                                cur = c.cursor()
+                                cur.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx,))
+                                if cur.fetchone():
+                                    continue
+                                side = (trade.get('side') or '').upper()
+                                direction = 'OPEN' if side == 'BUY' else 'CLOSE'
+                                cur.execute('''INSERT INTO trades (trader_id, transaction_hash, side, size, price,
+                                    usdc_size, timestamp, title, slug, icon, event_slug, outcome,
+                                    outcome_index, condition_id, asset, direction)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                    (tid, tx, trade.get('side'), trade.get('size'), trade.get('price'),
+                                     trade.get('usdcSize'), trade.get('timestamp'),
+                                     trade.get('title'), trade.get('slug'), trade.get('icon'),
+                                     trade.get('eventSlug'), trade.get('outcome'),
+                                     trade.get('outcomeIndex'), trade.get('conditionId'),
+                                     trade.get('asset'), direction))
+                                total_new += 1
+                except Exception:
+                    pass
+            c.commit()
+            c.close()
+            if total_new:
+                log_event('APP', 'INFO', f'Initial fetch: {total_new} trade(s) for {wallet[:10]}...')
+        except Exception as e:
+            log_event('APP', 'ERROR', f'Background fetch failed for {wallet[:10]}', str(e))
+
+    threading.Thread(target=_bg_fetch, daemon=True).start()
+
     return jsonify({'success': True, 'trader_id': tid})
+
+
+@app.route('/api/traders/<int:trader_id>/fetch', methods=['POST'])
+def fetch_trader_trades(trader_id):
+    """Manually trigger a trade fetch for a specific trader."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('SELECT wallet_address FROM traders WHERE id = ?', (trader_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return jsonify({'error': 'Trader not found'}), 404
+
+    wallet = row['wallet_address']
+
+    def _bg():
+        try:
+            c = get_db()
+            addresses = [wallet]
+            try:
+                profile = req.get('https://gamma-api.polymarket.com/public-profile',
+                                  params={'address': wallet}, timeout=10)
+                if profile.status_code == 200:
+                    proxy = (profile.json().get('proxyWallet') or '').lower()
+                    if proxy and proxy != wallet:
+                        addresses.append(proxy)
+            except Exception:
+                pass
+
+            total_new = 0
+            for addr in addresses:
+                try:
+                    r = req.get('https://data-api.polymarket.com/activity',
+                                params={'user': addr, 'type': 'TRADE', 'limit': 100}, timeout=15)
+                    if r.status_code == 200:
+                        trades = r.json()
+                        if isinstance(trades, list):
+                            for trade in trades:
+                                tx = trade.get('transactionHash')
+                                if not tx:
+                                    continue
+                                cur = c.cursor()
+                                cur.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx,))
+                                if cur.fetchone():
+                                    continue
+                                side = (trade.get('side') or '').upper()
+                                direction = 'OPEN' if side == 'BUY' else 'CLOSE'
+                                cur.execute('''INSERT INTO trades (trader_id, transaction_hash, side, size, price,
+                                    usdc_size, timestamp, title, slug, icon, event_slug, outcome,
+                                    outcome_index, condition_id, asset, direction)
+                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                                    (trader_id, tx, trade.get('side'), trade.get('size'), trade.get('price'),
+                                     trade.get('usdcSize'), trade.get('timestamp'),
+                                     trade.get('title'), trade.get('slug'), trade.get('icon'),
+                                     trade.get('eventSlug'), trade.get('outcome'),
+                                     trade.get('outcomeIndex'), trade.get('conditionId'),
+                                     trade.get('asset'), direction))
+                                total_new += 1
+                except Exception:
+                    pass
+            c.commit()
+            c.close()
+            if total_new:
+                log_event('APP', 'INFO', f'Manual fetch: {total_new} new trade(s) for {wallet[:10]}...')
+        except Exception as e:
+            log_event('APP', 'ERROR', f'Manual fetch failed', str(e))
+
+    threading.Thread(target=_bg, daemon=True).start()
+    return jsonify({'success': True, 'message': 'Fetch started in background'})
 
 
 @app.route('/api/traders/<int:trader_id>', methods=['DELETE'])

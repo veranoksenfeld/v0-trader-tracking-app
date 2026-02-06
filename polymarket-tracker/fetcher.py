@@ -54,6 +54,9 @@ PROFILE_REFRESH_INTERVAL = 300  # Refresh profiles every 5 minutes
 # Track last known trade per trader for fast dedup
 last_trade_timestamps = {}
 
+# Cache: wallet_address -> proxy_wallet (resolved from profile or positions API)
+_proxy_wallet_cache = {}
+
 
 def get_db():
     """Get database connection with WAL mode and timeout for concurrency"""
@@ -84,11 +87,37 @@ def fetch_trader_profile(wallet_address):
             timeout=10
         )
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            # Cache the proxy wallet if returned
+            proxy = data.get('proxyWallet') or data.get('proxy_wallet') or ''
+            if proxy:
+                _proxy_wallet_cache[wallet_address.lower()] = proxy.lower()
+                print(f"  Resolved proxy wallet for {wallet_address[:10]}...: {proxy[:10]}...")
+            return data
         return None
     except Exception as e:
         print(f"  Error fetching profile for {wallet_address[:10]}...: {e}")
         return None
+
+
+def resolve_trading_address(wallet_address):
+    """
+    Resolve the address to use for the Activity API.
+    Polymarket uses proxy wallets for on-chain trading.
+    The Activity API accepts BOTH the profile address and proxy wallet.
+    We try: original address first, then proxy wallet if known.
+    """
+    addr = wallet_address.lower()
+    if addr in _proxy_wallet_cache:
+        return addr, _proxy_wallet_cache[addr]
+    # Try to resolve via profile API
+    profile = fetch_trader_profile(addr)
+    if profile:
+        proxy = (profile.get('proxyWallet') or profile.get('proxy_wallet') or '').lower()
+        if proxy:
+            _proxy_wallet_cache[addr] = proxy
+            return addr, proxy
+    return addr, None
 
 
 def update_trader_profile(trader_id, wallet_address, conn):
@@ -184,27 +213,63 @@ def insert_trade(trader_id, trade, conn):
     return True
 
 
-def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
-    """Fetch recent trades for a specific trader via REST API"""
+def _fetch_activity(address, limit=50):
+    """Raw fetch from the Activity API for a single address."""
     try:
         response = requests.get(
             ACTIVITY_API,
-            params={'user': wallet_address, 'type': 'TRADE', 'limit': limit},
+            params={'user': address, 'type': 'TRADE', 'limit': limit},
             timeout=15
         )
-        if response.status_code != 200:
-            return 0
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, list):
+                return data
+        return []
+    except Exception:
+        return []
 
-        trades = response.json()
+
+def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
+    """Fetch recent trades for a specific trader via REST API.
+    Tries both the profile address and proxy wallet to maximise discovery."""
+    try:
+        primary, proxy = resolve_trading_address(wallet_address)
+
+        # Fetch from primary address
+        trades = _fetch_activity(primary, limit)
+
+        # Also fetch from proxy wallet if different
+        proxy_trades = []
+        if proxy and proxy != primary:
+            proxy_trades = _fetch_activity(proxy, limit)
+
+        # Merge and dedup by transactionHash
+        seen_hashes = set()
+        all_trades = []
+        for t in trades + proxy_trades:
+            h = t.get('transactionHash')
+            if h and h not in seen_hashes:
+                seen_hashes.add(h)
+                all_trades.append(t)
+
+        if not trades and not proxy_trades:
+            # Log that we got no data - helps debug
+            log_event('WARN', f'No activity returned for {wallet_address[:10]}',
+                       f'primary={primary[:10]}, proxy={proxy[:10] if proxy else "none"}')
+
         new_count = 0
-        for trade in trades:
+        for trade in all_trades:
             if insert_trade(trader_id, trade, conn):
                 new_count += 1
                 side = trade.get('side', '?')
+                outcome = trade.get('outcome', '')
                 title = trade.get('title', 'Unknown')[:40]
                 size = trade.get('usdcSize', 0)
-                print(f"    NEW TRADE: {side} ${size} on {title}")
-                log_event('TRADE', f'Detected: {side} ${size} on {title}')
+                price = trade.get('price', 0)
+                price_c = f"{float(price)*100:.0f}c" if price else '?'
+                print(f"    NEW TRADE: {side} {outcome} ${size} @ {price_c} on {title}")
+                log_event('TRADE', f'Detected: {side} {outcome} ${size} @ {price_c} on {title}')
         return new_count
     except Exception as e:
         print(f"  Error fetching trades for {wallet_address[:10]}...: {e}")
