@@ -223,6 +223,16 @@ def get_db():
     return conn
 
 
+def get_db_readonly():
+    """Read-only connection that won't conflict with writers."""
+    conn = sqlite3.connect(f'file:{DATABASE}?mode=ro', uri=True, timeout=30, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA busy_timeout=30000')
+    conn.execute('PRAGMA query_only=ON')
+    return conn
+
+
 def db_write(fn):
     """Execute a write operation under the global write lock to prevent 'database is locked'."""
     with _db_write_lock:
@@ -1564,7 +1574,7 @@ def get_balance():
 
 @app.route('/api/copy-trades', methods=['GET'])
 def get_copy_trades():
-    conn = get_db()
+    conn = get_db_readonly()
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 100')
@@ -1578,7 +1588,7 @@ def get_copy_trades():
 @app.route('/api/copy-trades/summary', methods=['GET'])
 def get_copy_trades_summary():
     """Returns win/loss summary for closed copy trades"""
-    conn = get_db()
+    conn = get_db_readonly()
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE status='SUCCESS'")
@@ -1753,24 +1763,30 @@ def get_closed_positions(wallet):
 def get_activity(wallet):
     """Get trade activity from local DB for this wallet (reliable source)."""
     limit = request.args.get('limit', 100, type=int)
-    conn = get_db()
-    cursor = conn.cursor()
-    # Get trader_id for this wallet
-    cursor.execute('SELECT id FROM traders WHERE LOWER(wallet_address) = ?', (wallet.lower(),))
-    row = cursor.fetchone()
-    if not row:
-        conn.close()
-        return jsonify([])
-    trader_id = row['id']
-    cursor.execute('''
-        SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym, tr.profile_image
-        FROM trades t JOIN traders tr ON t.trader_id = tr.id
-        WHERE t.trader_id = ?
-        ORDER BY t.timestamp DESC LIMIT ?
-    ''', (trader_id, limit))
-    trades = [dict(r) for r in cursor.fetchall()]
-    conn.close()
-    return jsonify(trades)
+    for attempt in range(3):
+        try:
+            conn = get_db_readonly()
+            cursor = conn.cursor()
+            cursor.execute('SELECT id FROM traders WHERE LOWER(wallet_address) = ?', (wallet.lower(),))
+            row = cursor.fetchone()
+            if not row:
+                conn.close()
+                return jsonify([])
+            trader_id = row['id']
+            cursor.execute('''
+                SELECT t.*, tr.wallet_address, tr.name, tr.pseudonym, tr.profile_image
+                FROM trades t JOIN traders tr ON t.trader_id = tr.id
+                WHERE t.trader_id = ?
+                ORDER BY t.timestamp DESC LIMIT ?
+            ''', (trader_id, limit))
+            trades = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            return jsonify(trades)
+        except sqlite3.OperationalError as e:
+            if 'locked' in str(e) and attempt < 2:
+                time.sleep(0.5)
+                continue
+            return jsonify({'error': 'Database busy, try again'}), 503
 
 
 @app.route('/api/stream')

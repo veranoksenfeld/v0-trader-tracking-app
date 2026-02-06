@@ -298,6 +298,11 @@ def insert_trade_from_activity(trader_id, trade, conn):
     tx_hash = trade.get('transactionHash')
     if not tx_hash:
         return False
+
+    # Do network call OUTSIDE the write lock to avoid holding it during I/O
+    cid = trade.get('conditionId') or ''
+    end_date = fetch_end_date_for_condition(cid)
+
     with _db_write_lock:
         cursor = conn.cursor()
         cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
@@ -306,8 +311,6 @@ def insert_trade_from_activity(trader_id, trade, conn):
 
         side_raw = (trade.get('side') or '').upper()
         direction = 'OPEN' if side_raw == 'BUY' else 'CLOSE'
-        cid = trade.get('conditionId') or ''
-        end_date = fetch_end_date_for_condition(cid)
 
         cursor.execute('''
             INSERT INTO trades (
