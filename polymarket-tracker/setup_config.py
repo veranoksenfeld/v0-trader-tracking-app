@@ -59,9 +59,17 @@ def setup():
         bal = get_usdc_balance(config.get('funder_address', ''))
         print(f"  USDC.e Balance:  ${bal:,.2f}")
         print(f"  Copy enabled:    {'Yes' if config.get('copy_trading_enabled') else 'No'}")
-        print(f"  Copy percentage: {config.get('copy_percentage', 10)}%")
-        print(f"  Max trade size:  ${config.get('max_trade_size', 100)}")
-        print(f"  Min trade size:  ${config.get('min_trade_size', 10)}")
+        strategy = config.get('copy_strategy', 'PERCENTAGE')
+        print(f"  Strategy:        {strategy}")
+        if strategy == 'FIXED':
+            print(f"  Fixed Amount:    ${config.get('fixed_trade_size', 10)}")
+        else:
+            print(f"  Copy %:          {config.get('copy_percentage', 10)}%")
+        print(f"  Max Trade $:     ${config.get('max_trade_size', 100)}")
+        mt = config.get('max_trades', 0)
+        print(f"  Max Trades:      {mt if mt > 0 else 'Unlimited'}")
+        mpe = config.get('max_trades_per_event', 0)
+        print(f"  Max / Event:     {mpe if mpe > 0 else 'Unlimited'}")
         print()
         reconfigure = input("Reconfigure? (y/N): ").strip().lower()
         if reconfigure != 'y':
@@ -95,16 +103,42 @@ def setup():
     # Copy trading settings
     print()
     print("--- Copy Trading Settings ---")
+    print()
+    print("  Strategy:")
+    print("    1 = Percentage  (copy a % of the trader's size)")
+    print("    2 = Fixed       (use a fixed $ amount every trade)")
+    print("    3 = Adaptive    (tiered sizing based on trade size)")
+    cur_strat = config.get('copy_strategy', 'PERCENTAGE')
+    strat_map = {'PERCENTAGE': '1', 'FIXED': '2', 'ADAPTIVE': '3'}
+    strat_default = strat_map.get(cur_strat, '1')
+    strat_input = input(f"  Select (1/2/3) [{strat_default}]: ").strip()
+    strategy = {'1': 'PERCENTAGE', '2': 'FIXED', '3': 'ADAPTIVE'}.get(strat_input, cur_strat)
 
-    cp_input = input(f"  Copy percentage (1-100) [{config.get('copy_percentage', 10)}]: ").strip()
-    copy_pct = int(cp_input) if cp_input else config.get('copy_percentage', 10)
-    copy_pct = max(1, min(100, copy_pct))
+    copy_pct = config.get('copy_percentage', 10)
+    fixed_size = config.get('fixed_trade_size', 10)
 
-    mx_input = input(f"  Max trade size USD [{config.get('max_trade_size', 100)}]: ").strip()
+    if strategy == 'FIXED':
+        fs_input = input(f"  Fixed trade amount USD [{fixed_size}]: ").strip()
+        fixed_size = float(fs_input) if fs_input else fixed_size
+        fixed_size = max(0.1, fixed_size)
+    else:
+        cp_input = input(f"  Copy percentage (1-100) [{copy_pct}]: ").strip()
+        copy_pct = int(cp_input) if cp_input else copy_pct
+        copy_pct = max(1, min(100, copy_pct))
+
+    mx_input = input(f"  Max Trade $ (cap per trade) [{config.get('max_trade_size', 100)}]: ").strip()
     max_size = float(mx_input) if mx_input else config.get('max_trade_size', 100)
+    max_size = max(1, max_size)
 
-    mn_input = input(f"  Min trade size to copy USD [{config.get('min_trade_size', 10)}]: ").strip()
-    min_size = float(mn_input) if mn_input else config.get('min_trade_size', 10)
+    mt_cur = config.get('max_trades', 0)
+    mt_input = input(f"  Max Trades (0 = unlimited) [{mt_cur}]: ").strip()
+    max_trades = int(mt_input) if mt_input else mt_cur
+    max_trades = max(0, max_trades)
+
+    mpe_cur = config.get('max_trades_per_event', 0)
+    mpe_input = input(f"  Max / Event (0 = unlimited) [{mpe_cur}]: ").strip()
+    max_per_event = int(mpe_input) if mpe_input else mpe_cur
+    max_per_event = max(0, max_per_event)
 
     enable_input = input("  Enable copy trading now? (y/N): ").strip().lower()
     enabled = enable_input == 'y'
@@ -113,9 +147,12 @@ def setup():
     config['private_key'] = pk
     config['funder_address'] = funder
     config['signature_type'] = sig_type
+    config['copy_strategy'] = strategy
     config['copy_percentage'] = copy_pct
+    config['fixed_trade_size'] = fixed_size
     config['max_trade_size'] = max_size
-    config['min_trade_size'] = min_size
+    config['max_trades'] = max_trades
+    config['max_trades_per_event'] = max_per_event
     config['copy_trading_enabled'] = enabled
 
     save_config(config)
@@ -154,6 +191,15 @@ def setup():
     print()
     print("=" * 60)
     print("  Configuration saved to config.json")
+    print()
+    print(f"  Strategy:     {strategy}")
+    if strategy == 'FIXED':
+        print(f"  Fixed Amount: ${fixed_size}")
+    else:
+        print(f"  Copy %:       {copy_pct}%")
+    print(f"  Max Trade $:  ${max_size}")
+    print(f"  Max Trades:   {max_trades if max_trades > 0 else 'Unlimited'}")
+    print(f"  Max / Event:  {max_per_event if max_per_event > 0 else 'Unlimited'}")
     print()
     print("  Next steps:")
     print("    1. python fetcher.py   (fetch trades from target wallets)")
