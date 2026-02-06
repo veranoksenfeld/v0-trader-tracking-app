@@ -10,7 +10,6 @@ import time
 import json
 import os
 import threading
-import asyncio
 from datetime import datetime
 
 DATABASE = 'polymarket_trades.db'

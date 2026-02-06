@@ -3,6 +3,38 @@ Polymarket Copy Trader - Flask Web Application
 Integrated copy trading engine with MOCK MODE for testing.
 Unified log system for app.py, fetcher.py, copy_trader.py.
 """
+# ---------------------------------------------------------------------------
+# TRIO NEUTRALISER (must run before ANY import that touches httpx/httpcore)
+# The `trio` package is broken on Python 3.14 (trio._path raises TypeError
+# for the new pathlib.Path.parser attribute). httpcore auto-imports trio if
+# it's installed, which crashes py_clob_client -> httpx -> httpcore.
+# By blocking the import, httpcore falls back to its asyncio backend.
+# ---------------------------------------------------------------------------
+import sys
+_trio_broken = False
+try:
+    import trio  # noqa: test if trio works
+except (TypeError, ImportError, Exception):
+    _trio_broken = True
+
+if _trio_broken:
+    # Prevent httpcore from importing the broken trio
+    # Insert a fake module so `import trio` succeeds but is a no-op
+    import types
+    _fake_trio = types.ModuleType('trio')
+    _fake_trio.__path__ = []
+    _fake_trio.Event = None
+    _fake_trio.Lock = None
+    _fake_trio.Semaphore = None
+    _fake_trio.CancelScope = None
+    _fake_trio.abc = types.ModuleType('trio.abc')
+    _fake_trio.lowlevel = types.ModuleType('trio.lowlevel')
+    sys.modules['trio'] = _fake_trio
+    sys.modules['trio.abc'] = _fake_trio.abc
+    sys.modules['trio.lowlevel'] = _fake_trio.lowlevel
+    print("NOTE: trio is broken on this Python version. Patched out trio; httpcore will use asyncio backend.")
+# ---------------------------------------------------------------------------
+
 from flask import Flask, render_template, jsonify, request, Response
 import sqlite3
 from datetime import datetime
@@ -234,9 +266,12 @@ try:
     from py_clob_client.clob_types import MarketOrderArgs, OrderType
     from py_clob_client.order_builder.constants import BUY, SELL
     CLOB_AVAILABLE = True
-except ImportError:
+except (ImportError, TypeError, Exception) as _clob_err:
     CLOB_AVAILABLE = False
-    print("WARNING: py-clob-client not installed. Live trading disabled. Run: pip install py-clob-client")
+    print(f"WARNING: py-clob-client unavailable ({type(_clob_err).__name__}: {_clob_err}). Live trading disabled.")
+    if 'trio' in str(_clob_err).lower():
+        print("  FIX: Run  pip uninstall trio blocknative-sdk trio-websocket  then retry.")
+        print("  The trio package is broken on Python 3.14. Our Blocknative integration uses websocket-client instead.")
 
 
 # ---- Helpers ----
