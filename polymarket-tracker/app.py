@@ -1393,6 +1393,67 @@ def debug_trades_sample():
     return jsonify(result)
 
 
+@app.route('/api/debug/alchemy-test/<wallet>', methods=['GET'])
+def debug_alchemy_test(wallet):
+    """Debug: test Alchemy ERC-1155 scan for a specific wallet address."""
+    wallet = wallet.lower()
+    result = {
+        'wallet': wallet,
+        'alchemy_configured': bool(ALCHEMY_API_KEY),
+        'proxy_wallet': None,
+        'addresses_scanned': [],
+        'buys': [],
+        'sells': [],
+    }
+    if not FETCHER_AVAILABLE:
+        result['error'] = 'Fetcher module not loaded'
+        return jsonify(result)
+    if not ALCHEMY_API_KEY:
+        result['error'] = 'ALCHEMY_API_KEY not set'
+        return jsonify(result)
+
+    from fetcher import resolve_proxy_wallet as rp, fetch_erc1155_transfers as fe
+    proxy = rp(wallet)
+    result['proxy_wallet'] = proxy
+
+    addrs = [wallet]
+    if proxy and proxy != wallet:
+        addrs.append(proxy)
+    result['addresses_scanned'] = addrs
+
+    for addr in addrs:
+        try:
+            buys, _ = fe(addr, direction='to')
+            for b in buys[:5]:
+                result['buys'].append({
+                    'hash': b.get('hash','')[:20],
+                    'from': b.get('from','')[:15],
+                    'to': b.get('to','')[:15],
+                    'raw_contract': (b.get('rawContract',{}).get('address') or '')[:15],
+                    'erc1155': b.get('erc1155Metadata', [])[:1],
+                    'blockNum': b.get('blockNum',''),
+                })
+        except Exception as e:
+            result['buys'].append({'error': str(e)})
+        try:
+            sells, _ = fe(addr, direction='from')
+            for s in sells[:5]:
+                result['sells'].append({
+                    'hash': s.get('hash','')[:20],
+                    'from': s.get('from','')[:15],
+                    'to': s.get('to','')[:15],
+                    'raw_contract': (s.get('rawContract',{}).get('address') or '')[:15],
+                    'erc1155': s.get('erc1155Metadata', [])[:1],
+                    'blockNum': s.get('blockNum',''),
+                })
+        except Exception as e:
+            result['sells'].append({'error': str(e)})
+
+    result['total_buys'] = len(result['buys'])
+    result['total_sells'] = len(result['sells'])
+    return jsonify(result)
+
+
 @app.route('/api/market-end-date/<condition_id>', methods=['GET'])
 def api_get_market_end_date(condition_id):
     """Fetch and return end date + metadata for a market by condition_id."""

@@ -44,7 +44,7 @@ CTF_CONTRACT         = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045'.lower()
 USDC_POLYGON         = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'.lower()
 USDCE_POLYGON        = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'.lower()
 
-POLYMARKET_CONTRACTS = {CTF_EXCHANGE_NEGRISK, CTF_EXCHANGE_LEGACY, NEG_RISK_ADAPTER}
+POLYMARKET_CONTRACTS = {CTF_EXCHANGE_NEGRISK, CTF_EXCHANGE_LEGACY, NEG_RISK_ADAPTER, CTF_CONTRACT}
 
 # Polymarket REST fallback
 ACTIVITY_API = 'https://data-api.polymarket.com/activity'
@@ -125,7 +125,11 @@ def resolve_proxy_wallet(wallet_address):
         proxy = (profile.get('proxyWallet') or profile.get('proxy_wallet') or '').lower()
         if proxy:
             _proxy_wallet_cache[addr] = proxy
+            print(f"  [Proxy] {addr[:10]}... -> proxy {proxy[:10]}...")
             return proxy
+    # If no proxy found, the wallet itself might BE the proxy wallet
+    # (users sometimes paste the proxy address from Polygonscan)
+    print(f"  [Proxy] No proxy found for {addr[:10]}... - will scan this address directly")
     return None
 
 
@@ -262,6 +266,7 @@ def fetch_erc1155_transfers(wallet, direction='to', from_block='0x0', page_key=N
         'fromBlock': from_block,
         'toBlock': 'latest',
         'order': 'desc',
+        'contractAddresses': [CTF_CONTRACT],  # Only Polymarket CTF tokens
     }
     if direction == 'to':
         params['toAddress'] = wallet
@@ -321,10 +326,18 @@ def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
         if not tx_hash:
             continue
 
-        # Skip if not involving a Polymarket contract
+        # Check if this is a Polymarket CTF token transfer
         from_addr = (tx.get('from') or '').lower()
         to_addr = (tx.get('to') or '').lower()
-        if from_addr not in POLYMARKET_CONTRACTS and to_addr not in POLYMARKET_CONTRACTS:
+        raw_contract = (tx.get('rawContract', {}).get('address') or '').lower()
+        # Accept if: the ERC-1155 contract is the Polymarket CTF token,
+        # OR either party is a known Polymarket contract
+        is_polymarket = (
+            raw_contract == CTF_CONTRACT or
+            from_addr in POLYMARKET_CONTRACTS or
+            to_addr in POLYMARKET_CONTRACTS
+        )
+        if not is_polymarket:
             continue
 
         with _db_write_lock:
@@ -341,7 +354,9 @@ def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
         token_id = erc1155_meta[0].get('tokenId', '')
         token_value_hex = erc1155_meta[0].get('value', '0x0')
         try:
-            size = int(token_value_hex, 16) / 1e6 if token_value_hex.startswith('0x') else float(token_value_hex)
+            # Polymarket CTF tokens use 1e6 decimals (same as USDC)
+            raw = int(token_value_hex, 16) if token_value_hex.startswith('0x') else int(float(token_value_hex))
+            size = raw / 1e6
         except Exception:
             size = 0.0
 
@@ -488,43 +503,55 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     """
     Fetch trades for a trader.
     Strategy:
-    1. Try Alchemy ERC-1155 transfers (most reliable)
-    2. Fallback to Polymarket Activity API
+    1. Try Alchemy ERC-1155 transfers on BOTH EOA + proxy wallet
+    2. Fallback to Polymarket Activity API on BOTH addresses
     """
     total_new = 0
+    eoa = wallet_address.lower()
 
     # Resolve proxy wallet (Polymarket uses proxy wallets for on-chain trades)
     proxy = resolve_proxy_wallet(wallet_address)
-    trading_wallet = proxy or wallet_address.lower()
+
+    # Build list of addresses to scan (deduplicated)
+    wallets_to_scan = [eoa]
+    if proxy and proxy != eoa:
+        wallets_to_scan.append(proxy)
+
+    print(f"  [Fetcher] Scanning {len(wallets_to_scan)} address(es) for {eoa[:10]}...")
+    for w in wallets_to_scan:
+        print(f"    -> {w}")
 
     # --- Method 1: Alchemy ---
     if ALCHEMY_API_KEY:
         try:
-            # Fetch tokens received (BUY)
-            buys, _ = fetch_erc1155_transfers(trading_wallet, direction='to')
-            new_buys = process_alchemy_transfers(trader_id, trading_wallet, buys, 'BUY', conn)
-            total_new += new_buys
+            for wallet in wallets_to_scan:
+                # Fetch tokens received (BUY)
+                buys, _ = fetch_erc1155_transfers(wallet, direction='to')
+                print(f"  [Alchemy] {wallet[:10]}... BUY transfers: {len(buys)}")
+                new_buys = process_alchemy_transfers(trader_id, wallet, buys, 'BUY', conn)
+                total_new += new_buys
 
-            # Fetch tokens sent (SELL)
-            sells, _ = fetch_erc1155_transfers(trading_wallet, direction='from')
-            new_sells = process_alchemy_transfers(trader_id, trading_wallet, sells, 'SELL', conn)
-            total_new += new_sells
+                # Fetch tokens sent (SELL)
+                sells, _ = fetch_erc1155_transfers(wallet, direction='from')
+                print(f"  [Alchemy] {wallet[:10]}... SELL transfers: {len(sells)}")
+                new_sells = process_alchemy_transfers(trader_id, wallet, sells, 'SELL', conn)
+                total_new += new_sells
 
             if total_new > 0:
-                print(f"  [Alchemy] {total_new} new trade(s) for {wallet_address[:10]}... (proxy: {trading_wallet[:10]}...)")
+                print(f"  [Alchemy] {total_new} new trade(s) for {eoa[:10]}...")
+                log_event('INFO', f'Alchemy: {total_new} new trade(s) for {eoa[:10]}')
+            else:
+                print(f"  [Alchemy] No new trades for {eoa[:10]}...")
             return total_new
         except Exception as e:
-            print(f"  [Alchemy] Error for {wallet_address[:10]}...: {e}")
+            print(f"  [Alchemy] Error for {eoa[:10]}...: {e}")
             log_event('WARN', f'Alchemy error, falling back to Activity API', str(e))
 
     # --- Method 2: Polymarket Activity API fallback ---
     try:
-        addresses = [wallet_address.lower()]
-        if proxy and proxy != wallet_address.lower():
-            addresses.append(proxy)
-
-        for addr in addresses:
+        for addr in wallets_to_scan:
             trades = _fetch_activity(addr, limit)
+            print(f"  [Activity API] {addr[:10]}... returned {len(trades)} trade(s)")
             for trade in trades:
                 if insert_trade_from_activity(trader_id, trade, conn):
                     total_new += 1
@@ -539,10 +566,10 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
             time.sleep(0.3)
 
         if total_new > 0:
-            print(f"  [Activity API] {total_new} new trade(s) for {wallet_address[:10]}...")
+            print(f"  [Activity API] {total_new} new trade(s) for {eoa[:10]}...")
     except Exception as e:
-        print(f"  [Activity API] Error for {wallet_address[:10]}...: {e}")
-        log_event('ERROR', f'Fetch error for {wallet_address[:10]}', str(e))
+        print(f"  [Activity API] Error for {eoa[:10]}...: {e}")
+        log_event('ERROR', f'Fetch error for {eoa[:10]}', str(e))
 
     return total_new
 
