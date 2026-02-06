@@ -1,9 +1,8 @@
 """
-Polymarket Trade Fetcher - Alchemy Edition
-Uses Alchemy's alchemy_getAssetTransfers on Polygon to track ERC-1155
-outcome-token transfers through the Polymarket CTF Exchange contracts.
-Falls back to the Polymarket Activity REST API when Alchemy data needs
-enrichment.
+Polymarket Trade Fetcher - Blocknative Mempool Edition
+Uses Blocknative's Mempool SDK on Polygon (network_id=137) to stream
+real-time transactions for tracked wallets. Falls back to the Polymarket
+Data API REST endpoints when Blocknative data needs enrichment.
 """
 import requests
 import sqlite3
@@ -11,6 +10,7 @@ import time
 import json
 import os
 import threading
+import asyncio
 from datetime import datetime
 
 DATABASE = 'polymarket_trades.db'
@@ -19,22 +19,29 @@ DATABASE = 'polymarket_trades.db'
 _db_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Alchemy configuration (env var first, then config.json fallback)
+# Blocknative configuration (env var first, then config.json fallback)
 # ---------------------------------------------------------------------------
-def _resolve_alchemy_key():
-    key = os.environ.get('ALCHEMY_API_KEY', '')
+def _resolve_blocknative_key():
+    key = os.environ.get('BLOCKNATIVE_API_KEY', '')
     if not key:
         try:
             with open('config.json', 'r') as f:
-                key = json.load(f).get('alchemy_api_key', '')
+                key = json.load(f).get('blocknative_api_key', '')
             if key:
-                os.environ['ALCHEMY_API_KEY'] = key
+                os.environ['BLOCKNATIVE_API_KEY'] = key
         except Exception:
             pass
     return key
 
-ALCHEMY_API_KEY = _resolve_alchemy_key()
-ALCHEMY_POLYGON_URL = f'https://polygon-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}'
+BLOCKNATIVE_API_KEY = _resolve_blocknative_key()
+POLYGON_NETWORK_ID = 137  # Polygon Mainnet for Blocknative SDK
+
+# Free public Polygon RPCs for balance queries & tx receipt lookups
+POLYGON_RPCS = [
+    'https://polygon-rpc.com',
+    'https://rpc.ankr.com/polygon',
+    'https://polygon.llamarpc.com',
+]
 
 # Polymarket contract addresses on Polygon
 CTF_EXCHANGE_NEGRISK = '0xC5d563A36AE78145C45a50134d48A1215220f80a'.lower()
@@ -237,57 +244,126 @@ def get_market_by_token(token_id):
 
 
 # ---------------------------------------------------------------------------
-# Alchemy - fetch ERC-1155 transfers (Polymarket outcome tokens)
+# Blocknative Mempool - real-time Polygon transaction monitoring
 # ---------------------------------------------------------------------------
 
-def _alchemy_rpc(method, params):
-    """Make a JSON-RPC call to Alchemy Polygon endpoint."""
-    payload = {
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': method,
-        'params': params,
-    }
-    r = requests.post(ALCHEMY_POLYGON_URL, json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json().get('result', {})
+# Blocknative stream instance (lazy-initialised)
+_bn_stream = None
+_bn_stream_lock = threading.Lock()
+_bn_watched_addresses = set()
+
+# Incoming transaction queue from Blocknative websocket
+_bn_tx_queue = []
+_bn_tx_queue_lock = threading.Lock()
 
 
-def fetch_erc1155_transfers(wallet, direction='to', from_block='0x0', page_key=None):
-    """
-    Fetch ERC-1155 transfers to/from a wallet using Alchemy.
-    direction='to'   -> tokens received (BUY side)
-    direction='from' -> tokens sent (SELL side)
-    """
-    params = {
-        'category': ['erc1155'],
-        'withMetadata': True,
-        'excludeZeroValue': True,
-        'maxCount': '0x64',  # 100
-        'fromBlock': from_block,
-        'toBlock': 'latest',
-        'order': 'desc',
-        'contractAddresses': [CTF_CONTRACT],  # Only Polymarket CTF tokens
-    }
-    if direction == 'to':
-        params['toAddress'] = wallet
-    else:
-        params['fromAddress'] = wallet
+def _get_bn_stream():
+    """Lazy-initialise the Blocknative SDK stream for Polygon."""
+    global _bn_stream
+    if _bn_stream is not None:
+        return _bn_stream
+    if not BLOCKNATIVE_API_KEY:
+        return None
+    with _bn_stream_lock:
+        if _bn_stream is not None:
+            return _bn_stream
+        try:
+            from blocknative.stream import Stream
+            _bn_stream = Stream(BLOCKNATIVE_API_KEY, network_id=POLYGON_NETWORK_ID)
+            print(f"  [Blocknative] Stream initialised for Polygon (network {POLYGON_NETWORK_ID})")
+            log_event('INFO', 'Blocknative stream initialised for Polygon')
+        except ImportError:
+            print("  [Blocknative] SDK not installed. Run: pip install blocknative-sdk")
+            log_event('WARN', 'blocknative-sdk not installed')
+        except Exception as e:
+            print(f"  [Blocknative] Stream init error: {e}")
+            log_event('WARN', f'Blocknative stream init error: {e}')
+    return _bn_stream
 
-    if page_key:
-        params['pageKey'] = page_key
 
-    result = _alchemy_rpc('alchemy_getAssetTransfers', [params])
-    return result.get('transfers', []), result.get('pageKey', '')
+async def _bn_txn_handler(txn, unsubscribe):
+    """Handle incoming transactions from Blocknative stream."""
+    if not txn:
+        return
+    status = txn.get('status', '')
+    # Only process confirmed transactions (or pending for real-time alerts)
+    if status in ('confirmed', 'pending'):
+        with _bn_tx_queue_lock:
+            _bn_tx_queue.append(txn)
+
+
+def bn_watch_address(address):
+    """Subscribe to a wallet address on Blocknative."""
+    addr = address.lower()
+    if addr in _bn_watched_addresses:
+        return True
+    stream = _get_bn_stream()
+    if not stream:
+        return False
+    try:
+        filters = [{'status': 'confirmed'}]
+        stream.subscribe_address(addr, _bn_txn_handler, filter=filters)
+        _bn_watched_addresses.add(addr)
+        print(f"  [Blocknative] Watching {addr[:10]}...")
+        log_event('INFO', f'Blocknative watching {addr[:10]}...')
+        return True
+    except Exception as e:
+        print(f"  [Blocknative] Watch error for {addr[:10]}...: {e}")
+        return False
+
+
+def bn_start_stream():
+    """Start the Blocknative websocket stream in a background thread."""
+    stream = _get_bn_stream()
+    if not stream:
+        return False
+    try:
+        def _run_stream():
+            try:
+                stream.connect()
+            except Exception as e:
+                print(f"  [Blocknative] Stream error: {e}")
+                log_event('WARN', f'Blocknative stream error: {e}')
+        t = threading.Thread(target=_run_stream, daemon=True)
+        t.start()
+        print("  [Blocknative] Websocket stream started")
+        log_event('INFO', 'Blocknative websocket stream started')
+        return True
+    except Exception as e:
+        print(f"  [Blocknative] Start error: {e}")
+        return False
+
+
+def bn_drain_queue():
+    """Drain and return all queued transactions from Blocknative."""
+    with _bn_tx_queue_lock:
+        txns = list(_bn_tx_queue)
+        _bn_tx_queue.clear()
+    return txns
+
+
+def _polygon_rpc(method, params):
+    """Make a JSON-RPC call to a free public Polygon RPC."""
+    payload = {'jsonrpc': '2.0', 'id': 1, 'method': method, 'params': params}
+    for rpc in POLYGON_RPCS:
+        try:
+            r = requests.post(rpc, json=payload, timeout=15)
+            r.raise_for_status()
+            result = r.json()
+            if 'result' in result:
+                return result['result']
+        except Exception:
+            continue
+    return {}
 
 
 def fetch_usdc_value_from_tx(tx_hash, wallet):
     """
     Get the USDC amount from a transaction receipt by looking at ERC-20
-    Transfer events involving the wallet.
+    Transfer events involving the wallet. Uses free public Polygon RPCs.
     """
     try:
-        result = _alchemy_rpc('eth_getTransactionReceipt', [tx_hash])
+        result = _polygon_rpc('eth_getTransactionReceipt', [tx_hash])
         if not result or not result.get('logs'):
             return 0.0
 
@@ -304,7 +380,6 @@ def fetch_usdc_value_from_tx(tx_hash, wallet):
                 continue
             if topics[0].lower() != transfer_topic:
                 continue
-            # Check if wallet is sender or receiver
             from_addr = topics[1].lower()
             to_addr = topics[2].lower()
             if from_addr == wallet_padded or to_addr == wallet_padded:
@@ -315,28 +390,25 @@ def fetch_usdc_value_from_tx(tx_hash, wallet):
         return 0.0
 
 
-def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
+def process_blocknative_txns(trader_id, wallet, txns, conn):
     """
-    Process Alchemy ERC-1155 transfers and insert as trades.
-    side='BUY' for tokens received, 'SELL' for tokens sent.
-    Returns count of new trades inserted.
+    Process Blocknative transaction events and insert relevant Polymarket
+    trades into DB. Returns count of new trades inserted.
     """
     new_count = 0
-    for tx in transfers:
-        tx_hash = tx.get('hash', '')
+    wallet_lower = wallet.lower()
+
+    for txn in txns:
+        tx_hash = txn.get('hash', '')
         if not tx_hash:
             continue
 
-        # Check if this is a Polymarket CTF token transfer
-        from_addr = (tx.get('from') or '').lower()
-        to_addr = (tx.get('to') or '').lower()
-        raw_contract = (tx.get('rawContract', {}).get('address') or '').lower()
-        # Accept if: the ERC-1155 contract is the Polymarket CTF token,
-        # OR either party is a known Polymarket contract
+        # Check if this involves Polymarket contracts
+        to_addr = (txn.get('to') or '').lower()
+        from_addr = (txn.get('from') or '').lower()
         is_polymarket = (
-            raw_contract == CTF_CONTRACT or
-            from_addr in POLYMARKET_CONTRACTS or
-            to_addr in POLYMARKET_CONTRACTS
+            to_addr in POLYMARKET_CONTRACTS or
+            from_addr in POLYMARKET_CONTRACTS
         )
         if not is_polymarket:
             continue
@@ -347,74 +419,30 @@ def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
             if cursor.fetchone():
                 continue
 
-        # Extract token info
-        erc1155_meta = tx.get('erc1155Metadata') or []
-        if not erc1155_meta:
-            continue
+        # Determine side based on contract interaction
+        side = 'BUY' if to_addr in POLYMARKET_CONTRACTS else 'SELL'
 
-        token_id = erc1155_meta[0].get('tokenId', '')
-        token_value_hex = erc1155_meta[0].get('value', '0x0')
-        try:
-            # Polymarket CTF tokens use 1e6 decimals (same as USDC)
-            raw = int(token_value_hex, 16) if token_value_hex.startswith('0x') else int(float(token_value_hex))
-            size = raw / 1e6
-        except Exception:
-            size = 0.0
+        # Get USDC value from tx receipt
+        usdc_size = fetch_usdc_value_from_tx(tx_hash, wallet_lower)
 
-        # Get USDC value from the tx receipt
-        usdc_size = fetch_usdc_value_from_tx(tx_hash, wallet)
-
-        # Calculate price (USDC per token)
-        price = usdc_size / size if size > 0 else 0.0
-
-        # Get market metadata from Gamma API using the token_id
-        # Convert hex token_id to decimal for Gamma API lookup
-        try:
-            token_id_dec = str(int(token_id, 16)) if token_id.startswith('0x') else token_id
-        except Exception:
-            token_id_dec = token_id
-
-        market = get_market_by_token(token_id_dec)
-
-        title = ''
-        slug = ''
-        icon = ''
-        event_slug = ''
-        outcome = ''
-        outcome_index = 0
-        condition_id = ''
-        end_date = ''
-
-        if market:
-            title = market.get('title', '')
-            slug = market.get('slug', '')
-            icon = market.get('icon', '')
-            event_slug = market.get('event_slug', '')
-            outcome = market.get('outcome', '')
-            outcome_index = market.get('outcome_index', 0)
-            condition_id = market.get('condition_id', '')
-            end_date = market.get('end_date', '')
-
-        # Get timestamp from metadata
-        block_ts = ''
-        meta = tx.get('metadata', {})
-        if meta and meta.get('blockTimestamp'):
-            block_ts = meta['blockTimestamp']
-
-        # Convert ISO timestamp to unix epoch (seconds)
-        timestamp_unix = 0
-        if block_ts:
+        # Get timestamp
+        timestamp_unix = txn.get('pendingTimeStamp') or txn.get('confirmedTimeStamp') or int(time.time())
+        if isinstance(timestamp_unix, str):
             try:
-                dt = datetime.fromisoformat(block_ts.replace('Z', '+00:00'))
-                timestamp_unix = int(dt.timestamp())
-            except Exception:
-                pass
+                timestamp_unix = int(timestamp_unix)
+            except ValueError:
+                try:
+                    dt = datetime.fromisoformat(timestamp_unix.replace('Z', '+00:00'))
+                    timestamp_unix = int(dt.timestamp())
+                except Exception:
+                    timestamp_unix = int(time.time())
 
+        # Try to extract token info from input data if available
+        # For now, we'll use the Polymarket Data API to enrich
         direction = 'OPEN' if side == 'BUY' else 'CLOSE'
 
         with _db_write_lock:
             cursor = conn.cursor()
-            # Recheck to avoid race
             cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
             if cursor.fetchone():
                 continue
@@ -425,16 +453,14 @@ def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
                     outcome_index, condition_id, asset, direction, end_date
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                trader_id, tx_hash, side, size, price, usdc_size,
-                timestamp_unix, title, slug, icon, event_slug, outcome,
-                outcome_index, condition_id, token_id_dec,
-                direction, end_date
+                trader_id, tx_hash, side, 0, 0, usdc_size,
+                timestamp_unix, '', '', '', '', '',
+                0, '', '', direction, ''
             ))
             conn.commit()
         new_count += 1
-        price_c = f"{price*100:.0f}c" if price else '?'
-        print(f"    NEW: {side} {outcome or '?'} {size:.2f} @ {price_c} ${usdc_size:.2f} | {title[:40]}")
-        log_event('TRADE', f'{side} {outcome} ${usdc_size:.2f} @ {price_c} on {title[:40]}')
+        print(f"    NEW [Blocknative]: {side} ${usdc_size:.2f} | tx {tx_hash[:16]}...")
+        log_event('TRADE', f'[Blocknative] {side} ${usdc_size:.2f} | tx {tx_hash[:16]}')
 
     return new_count
 
@@ -547,7 +573,7 @@ def insert_trade_from_activity(trader_id, trade, conn):
 
 
 # ---------------------------------------------------------------------------
-# Combined fetch: Data API first, Alchemy fallback
+# Combined fetch: Data API first, Blocknative real-time fallback
 # ---------------------------------------------------------------------------
 
 def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
@@ -556,7 +582,7 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     Strategy:
     1. Try Polymarket Data API /trades endpoint (authoritative, uses profile address)
     2. Try Polymarket Data API /activity endpoint
-    3. Fallback to Alchemy ERC-1155 transfers
+    3. Process any Blocknative real-time transactions from the queue
     """
     total_new = 0
     eoa = wallet_address.lower()
@@ -611,31 +637,39 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     except Exception as e:
         print(f"  [Activity API] Error for {eoa[:10]}...: {e}")
 
-    # --- Method 3: Alchemy fallback (on-chain ERC-1155 transfers) ---
-    if ALCHEMY_API_KEY:
+    # --- Method 3: Blocknative real-time stream (process queued txns) ---
+    if BLOCKNATIVE_API_KEY:
         proxy = resolve_proxy_wallet(wallet_address)
         wallets_to_scan = [eoa]
         if proxy and proxy != eoa:
             wallets_to_scan.append(proxy)
 
+        # Make sure addresses are being watched
+        for w in wallets_to_scan:
+            bn_watch_address(w)
+
+        # Process any queued transactions from Blocknative stream
         try:
-            for wallet in wallets_to_scan:
-                buys, _ = fetch_erc1155_transfers(wallet, direction='to')
-                print(f"  [Alchemy] {wallet[:10]}... BUY transfers: {len(buys)}")
-                new_buys = process_alchemy_transfers(trader_id, wallet, buys, 'BUY', conn)
-                total_new += new_buys
+            queued_txns = bn_drain_queue()
+            if queued_txns:
+                # Filter txns relevant to this trader's wallets
+                relevant = [t for t in queued_txns
+                            if (t.get('from') or '').lower() in wallets_to_scan
+                            or (t.get('to') or '').lower() in wallets_to_scan]
+                if relevant:
+                    for w in wallets_to_scan:
+                        wallet_txns = [t for t in relevant
+                                       if (t.get('from') or '').lower() == w
+                                       or (t.get('to') or '').lower() == w]
+                        new = process_blocknative_txns(trader_id, w, wallet_txns, conn)
+                        total_new += new
 
-                sells, _ = fetch_erc1155_transfers(wallet, direction='from')
-                print(f"  [Alchemy] {wallet[:10]}... SELL transfers: {len(sells)}")
-                new_sells = process_alchemy_transfers(trader_id, wallet, sells, 'SELL', conn)
-                total_new += new_sells
-
-            if total_new > 0:
-                print(f"  [Alchemy] {total_new} new trade(s) for {eoa[:10]}...")
-                log_event('INFO', f'Alchemy: {total_new} new trade(s) for {eoa[:10]}')
+                if total_new > 0:
+                    print(f"  [Blocknative] {total_new} new trade(s) for {eoa[:10]}...")
+                    log_event('INFO', f'Blocknative: {total_new} new trade(s) for {eoa[:10]}')
         except Exception as e:
-            print(f"  [Alchemy] Error for {eoa[:10]}...: {e}")
-            log_event('WARN', f'Alchemy error for {eoa[:10]}', str(e))
+            print(f"  [Blocknative] Error for {eoa[:10]}...: {e}")
+            log_event('WARN', f'Blocknative error for {eoa[:10]}', str(e))
 
     return total_new
 
@@ -646,9 +680,9 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
 
 def poll_loop():
     print(f"[{datetime.now()}] Polling started (every {POLL_INTERVAL}s)")
-    print(f"  Alchemy: {'configured' if ALCHEMY_API_KEY else 'NOT SET - using Activity API fallback'}")
-    if not ALCHEMY_API_KEY:
-        print("  Set ALCHEMY_API_KEY env var for reliable on-chain tracking")
+    print(f"  Blocknative: {'configured' if BLOCKNATIVE_API_KEY else 'NOT SET - using Data API only'}")
+    if not BLOCKNATIVE_API_KEY:
+        print("  Set BLOCKNATIVE_API_KEY env var for real-time mempool monitoring")
 
     last_profile_refresh = time.time()
 
@@ -695,11 +729,16 @@ def poll_loop():
 
 def run_fetcher():
     print("=" * 60)
-    print("  Polymarket Trade Fetcher (Data API + Alchemy fallback)")
+    print("  Polymarket Trade Fetcher (Data API + Blocknative Mempool)")
     print("=" * 60)
-    mode = 'Data API + Alchemy fallback' if ALCHEMY_API_KEY else 'Data API only'
+    mode = 'Data API + Blocknative Mempool' if BLOCKNATIVE_API_KEY else 'Data API only'
     print(f"  Mode: {mode}")
     log_event('INFO', 'Fetcher started', f'Mode: {mode}')
+
+    # Start Blocknative stream if API key is available
+    if BLOCKNATIVE_API_KEY:
+        bn_start_stream()
+        time.sleep(1)  # Give stream time to connect
 
     # Initial fetch for all traders
     traders = get_tracked_traders()
@@ -713,6 +752,13 @@ def run_fetcher():
 
             if not trader['name']:
                 update_trader_profile(tid, addr, conn)
+
+            # Register addresses with Blocknative for real-time monitoring
+            if BLOCKNATIVE_API_KEY:
+                bn_watch_address(addr)
+                proxy = resolve_proxy_wallet(addr)
+                if proxy and proxy != addr.lower():
+                    bn_watch_address(proxy)
 
             new = fetch_trades_for_trader(tid, addr, conn, limit=100)
             print(f"  {name}: {new} new trade(s)")

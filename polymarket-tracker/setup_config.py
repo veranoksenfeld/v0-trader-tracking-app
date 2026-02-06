@@ -109,7 +109,7 @@ def setup():
     config = load_config()
 
     # Show current config
-    if config.get('private_key') or config.get('alchemy_api_key'):
+    if config.get('private_key') or config.get('blocknative_api_key'):
         if config.get('private_key'):
             pk = config['private_key']
             masked_pk = pk[:4] + '*' * (len(pk) - 8) + pk[-4:] if len(pk) > 8 else '***'
@@ -118,12 +118,12 @@ def setup():
         if config.get('funder_address'):
             bal = get_usdc_balance(config.get('funder_address', ''))
             print(f"  USDC.e Balance:  ${bal:,.2f}")
-        if config.get('alchemy_api_key'):
-            ak = config['alchemy_api_key']
-            masked_ak = ak[:6] + '*' * max(0, len(ak) - 10) + ak[-4:] if len(ak) > 10 else '***'
-            print(f"  Alchemy API key: {masked_ak}")
+        if config.get('blocknative_api_key'):
+            bk = config['blocknative_api_key']
+            masked_bk = bk[:6] + '*' * max(0, len(bk) - 10) + bk[-4:] if len(bk) > 10 else '***'
+            print(f"  Blocknative key: {masked_bk}")
         else:
-            print(f"  Alchemy API key: Not set")
+            print(f"  Blocknative key: Not set")
         print(f"  Copy enabled:    {'Yes' if config.get('copy_trading_enabled') else 'No'}")
         print(f"  Copy percentage: {config.get('copy_percentage', 10)}%")
         print(f"  Max trade size:  ${config.get('max_trade_size', 100)}")
@@ -160,27 +160,27 @@ def setup():
     sig_input = input("  Select (1/2) [1]: ").strip()
     sig_type = int(sig_input) if sig_input in ('1', '2') else 1
 
-    # Alchemy API key
+    # Blocknative API key
     print()
-    print("--- Alchemy API (On-Chain Trade Fetching) ---")
-    print("  Get a free key at: https://dashboard.alchemy.com")
-    print("  Create an app on Polygon Mainnet, then copy the API key.")
+    print("--- Blocknative Mempool (Real-Time Transaction Monitoring) ---")
+    print("  Get a free key at: https://www.blocknative.com")
+    print("  Sign up, create an API key for Polygon monitoring.")
     print()
-    existing_alchemy = config.get('alchemy_api_key', '')
-    if existing_alchemy:
-        masked = existing_alchemy[:6] + '*' * max(0, len(existing_alchemy) - 10) + existing_alchemy[-4:] if len(existing_alchemy) > 10 else '***'
+    existing_bn = config.get('blocknative_api_key', '')
+    if existing_bn:
+        masked = existing_bn[:6] + '*' * max(0, len(existing_bn) - 10) + existing_bn[-4:] if len(existing_bn) > 10 else '***'
         print(f"  Current key: {masked}")
-    alchemy_input = input(f"  Alchemy API Key (Enter to keep, 'clear' to remove): ").strip()
-    if alchemy_input.lower() == 'clear':
-        config['alchemy_api_key'] = ''
-        print("  Alchemy API key cleared. Will use Activity API fallback.")
-    elif alchemy_input:
-        config['alchemy_api_key'] = alchemy_input
+    bn_input = input(f"  Blocknative API Key (Enter to keep, 'clear' to remove): ").strip()
+    if bn_input.lower() == 'clear':
+        config['blocknative_api_key'] = ''
+        print("  Blocknative key cleared. Will use Data API only.")
+    elif bn_input:
+        config['blocknative_api_key'] = bn_input
         # Also set as env var for current session
-        os.environ['ALCHEMY_API_KEY'] = alchemy_input
-        print("  Alchemy API key saved.")
+        os.environ['BLOCKNATIVE_API_KEY'] = bn_input
+        print("  Blocknative API key saved.")
     else:
-        print("  Keeping existing Alchemy key." if existing_alchemy else "  Skipped. Will use Activity API fallback.")
+        print("  Keeping existing key." if existing_bn else "  Skipped. Will use Data API only.")
 
     # Copy trading settings
     print()

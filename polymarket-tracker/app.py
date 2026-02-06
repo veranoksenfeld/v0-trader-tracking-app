@@ -13,9 +13,9 @@ import threading
 import random
 import requests as req
 
-# Import fetcher functions for Alchemy-based trade fetching
+# Import fetcher functions for Blocknative-based trade fetching
 try:
-    from fetcher import fetch_trades_for_trader as fetcher_fetch, resolve_proxy_wallet, update_trader_profile as fetcher_update_profile
+    from fetcher import fetch_trades_for_trader as fetcher_fetch, resolve_proxy_wallet, update_trader_profile as fetcher_update_profile, bn_watch_address, bn_start_stream
     FETCHER_AVAILABLE = True
 except ImportError:
     FETCHER_AVAILABLE = False
@@ -24,20 +24,20 @@ app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
 
-def _resolve_alchemy_key():
-    """Read Alchemy API key from env var first, then config.json fallback."""
-    key = os.environ.get('ALCHEMY_API_KEY', '')
+def _resolve_blocknative_key():
+    """Read Blocknative API key from env var first, then config.json fallback."""
+    key = os.environ.get('BLOCKNATIVE_API_KEY', '')
     if not key:
         try:
             with open(CONFIG_FILE, 'r') as f:
-                key = json.load(f).get('alchemy_api_key', '')
+                key = json.load(f).get('blocknative_api_key', '')
             if key:
-                os.environ['ALCHEMY_API_KEY'] = key  # propagate to fetcher module
+                os.environ['BLOCKNATIVE_API_KEY'] = key  # propagate to fetcher module
         except Exception:
             pass
     return key
 
-ALCHEMY_API_KEY = _resolve_alchemy_key()
+BLOCKNATIVE_API_KEY = _resolve_blocknative_key()
 
 # ---- Serialised DB write lock (prevents "database is locked") ----
 _db_write_lock = threading.Lock()
@@ -1383,64 +1383,38 @@ def debug_trades_sample():
     return jsonify(result)
 
 
-@app.route('/api/debug/alchemy-test/<wallet>', methods=['GET'])
-def debug_alchemy_test(wallet):
-    """Debug: test Alchemy ERC-1155 scan for a specific wallet address."""
+@app.route('/api/debug/blocknative-test/<wallet>', methods=['GET'])
+def debug_blocknative_test(wallet):
+    """Debug: test Blocknative mempool monitoring for a specific wallet address."""
     wallet = wallet.lower()
     result = {
         'wallet': wallet,
-        'alchemy_configured': bool(ALCHEMY_API_KEY),
+        'blocknative_configured': bool(BLOCKNATIVE_API_KEY),
         'proxy_wallet': None,
-        'addresses_scanned': [],
-        'buys': [],
-        'sells': [],
+        'addresses_watched': [],
+        'stream_active': False,
     }
     if not FETCHER_AVAILABLE:
         result['error'] = 'Fetcher module not loaded'
         return jsonify(result)
-    if not ALCHEMY_API_KEY:
-        result['error'] = 'ALCHEMY_API_KEY not set'
+    if not BLOCKNATIVE_API_KEY:
+        result['error'] = 'BLOCKNATIVE_API_KEY not set'
         return jsonify(result)
 
-    from fetcher import resolve_proxy_wallet as rp, fetch_erc1155_transfers as fe
+    from fetcher import resolve_proxy_wallet as rp, bn_watch_address, _bn_watched_addresses, _bn_stream
     proxy = rp(wallet)
     result['proxy_wallet'] = proxy
 
     addrs = [wallet]
     if proxy and proxy != wallet:
         addrs.append(proxy)
-    result['addresses_scanned'] = addrs
 
     for addr in addrs:
-        try:
-            buys, _ = fe(addr, direction='to')
-            for b in buys[:5]:
-                result['buys'].append({
-                    'hash': b.get('hash','')[:20],
-                    'from': b.get('from','')[:15],
-                    'to': b.get('to','')[:15],
-                    'raw_contract': (b.get('rawContract',{}).get('address') or '')[:15],
-                    'erc1155': b.get('erc1155Metadata', [])[:1],
-                    'blockNum': b.get('blockNum',''),
-                })
-        except Exception as e:
-            result['buys'].append({'error': str(e)})
-        try:
-            sells, _ = fe(addr, direction='from')
-            for s in sells[:5]:
-                result['sells'].append({
-                    'hash': s.get('hash','')[:20],
-                    'from': s.get('from','')[:15],
-                    'to': s.get('to','')[:15],
-                    'raw_contract': (s.get('rawContract',{}).get('address') or '')[:15],
-                    'erc1155': s.get('erc1155Metadata', [])[:1],
-                    'blockNum': s.get('blockNum',''),
-                })
-        except Exception as e:
-            result['sells'].append({'error': str(e)})
+        watched = bn_watch_address(addr)
+        result['addresses_watched'].append({'address': addr, 'watching': watched})
 
-    result['total_buys'] = len(result['buys'])
-    result['total_sells'] = len(result['sells'])
+    result['stream_active'] = _bn_stream is not None
+    result['total_watched'] = len(_bn_watched_addresses)
     return jsonify(result)
 
 
@@ -1477,8 +1451,8 @@ def get_stats():
     return jsonify({
         'trader_count': trader_count, 'trade_count': trade_count,
         'total_volume': round(total_volume, 2), 'last_fetch': last_fetch,
-        'fetcher_mode': 'Data API' + (' + Alchemy' if ALCHEMY_API_KEY else ''),
-        'alchemy_configured': bool(ALCHEMY_API_KEY),
+        'fetcher_mode': 'Data API' + (' + Blocknative' if BLOCKNATIVE_API_KEY else ''),
+        'blocknative_configured': bool(BLOCKNATIVE_API_KEY),
     })
 
 
