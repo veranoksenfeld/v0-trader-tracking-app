@@ -833,39 +833,72 @@ def stop_copy_engine():
 # ============================================
 
 _market_end_date_cache = {}
+_market_metadata_cache = {}  # condition_id -> {end_date, outcomes, description, question, ...}
 
 
 def get_market_end_date(condition_id):
     """Fetch end date for a market from Gamma API. Cached."""
     if condition_id in _market_end_date_cache:
         return _market_end_date_cache[condition_id]
+    # Also populate metadata cache
+    meta = get_market_metadata(condition_id)
+    return meta.get('end_date', '') if meta else ''
+
+
+def get_market_metadata(condition_id):
+    """Fetch full market metadata from Gamma API. Cached."""
+    if condition_id in _market_metadata_cache:
+        return _market_metadata_cache[condition_id]
     try:
         resp = req.get(
             'https://gamma-api.polymarket.com/markets',
             params={'condition_id': condition_id, 'closed': 'false'},
             timeout=10
         )
+        markets = []
         if resp.status_code == 200:
             markets = resp.json()
-            if markets and len(markets) > 0:
-                end_date = markets[0].get('endDate') or markets[0].get('end_date_iso') or ''
-                _market_end_date_cache[condition_id] = end_date
-                return end_date
-        # Try closed markets too
-        resp2 = req.get(
-            'https://gamma-api.polymarket.com/markets',
-            params={'condition_id': condition_id},
-            timeout=10
-        )
-        if resp2.status_code == 200:
-            markets2 = resp2.json()
-            if markets2 and len(markets2) > 0:
-                end_date = markets2[0].get('endDate') or markets2[0].get('end_date_iso') or ''
-                _market_end_date_cache[condition_id] = end_date
-                return end_date
+        if not markets:
+            # Try closed markets too
+            resp2 = req.get(
+                'https://gamma-api.polymarket.com/markets',
+                params={'condition_id': condition_id},
+                timeout=10
+            )
+            if resp2.status_code == 200:
+                markets = resp2.json()
+
+        if markets and len(markets) > 0:
+            m = markets[0]
+            end_date = m.get('endDate') or m.get('end_date_iso') or ''
+            outcomes_raw = m.get('outcomes', '[]')
+            outcome_prices_raw = m.get('outcomePrices', '[]')
+            try:
+                outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
+            except Exception:
+                outcomes = []
+            try:
+                outcome_prices = json.loads(outcome_prices_raw) if isinstance(outcome_prices_raw, str) else outcome_prices_raw
+            except Exception:
+                outcome_prices = []
+
+            meta = {
+                'end_date': end_date,
+                'question': m.get('question', ''),
+                'description': m.get('description', ''),
+                'outcomes': outcomes,
+                'outcome_prices': [float(p) for p in outcome_prices] if outcome_prices else [],
+                'start_date': m.get('startDate') or m.get('start_date_iso') or '',
+                'event_start_time': m.get('eventStartTime') or '',
+                'active': m.get('active', False),
+                'closed': m.get('closed', False),
+            }
+            _market_end_date_cache[condition_id] = end_date
+            _market_metadata_cache[condition_id] = meta
+            return meta
     except Exception as e:
-        log_event('ENGINE', 'WARN', 'End date fetch error', str(e))
-    return ''
+        log_event('ENGINE', 'WARN', 'Market metadata fetch error', str(e))
+    return None
 
 
 def check_resolved_markets():
@@ -1109,9 +1142,19 @@ def get_trades():
 
 @app.route('/api/market-end-date/<condition_id>', methods=['GET'])
 def api_get_market_end_date(condition_id):
-    """Fetch and return the end date for a market by condition_id."""
-    ed = get_market_end_date(condition_id)
-    return jsonify({'condition_id': condition_id, 'end_date': ed})
+    """Fetch and return end date + metadata for a market by condition_id."""
+    meta = get_market_metadata(condition_id)
+    if meta:
+        return jsonify({
+            'condition_id': condition_id,
+            'end_date': meta.get('end_date', ''),
+            'outcomes': meta.get('outcomes', []),
+            'outcome_prices': meta.get('outcome_prices', []),
+            'question': meta.get('question', ''),
+            'start_date': meta.get('start_date', ''),
+            'event_start_time': meta.get('event_start_time', ''),
+        })
+    return jsonify({'condition_id': condition_id, 'end_date': ''})
 
 
 @app.route('/api/stats', methods=['GET'])

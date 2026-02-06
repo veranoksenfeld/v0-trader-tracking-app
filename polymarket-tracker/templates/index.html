@@ -186,12 +186,13 @@
         .dir-OPEN { background:rgba(34,197,94,0.12); color:var(--green); }
         .dir-CLOSE { background:rgba(239,68,68,0.12); color:var(--red); }
         .dir-REDUCE { background:rgba(234,179,8,0.12); color:var(--yellow); }
-        .event-timer { font-size:10px; font-weight:600; font-family:'SF Mono',SFMono-Regular,Consolas,monospace; white-space:nowrap; }
+        .event-timer { font-size:10px; font-weight:700; font-family:'SF Mono',SFMono-Regular,Consolas,monospace; white-space:nowrap; }
         .bet-badge { display:inline-flex; align-items:center; gap:3px; padding:4px 10px; border-radius:6px; font-size:12px; font-weight:700; letter-spacing:.3px; white-space:nowrap; }
         .bet-yes { background:rgba(34,197,94,0.18); color:var(--green); border:1px solid rgba(34,197,94,0.25); }
         .bet-no { background:rgba(239,68,68,0.18); color:var(--red); border:1px solid rgba(239,68,68,0.25); }
         .bet-unknown { background:rgba(161,161,170,0.1); color:var(--text-dim); border:1px solid transparent; }
         .bet-arrow { font-size:14px; line-height:1; font-weight:900; }
+        .timer-cell { min-width:110px; }
         .closed-section { margin-top:16px; }
         .closed-summary-row { display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--border); transition:background .1s; }
         .closed-summary-row:hover { background:var(--bg-hover); }
@@ -344,7 +345,7 @@
             <div class="page" id="page-trades">
                 <div class="trades-header"><h2>Trade Feed</h2><div class="filter-buttons"><button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button><button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button><button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button></div></div>
                 <table class="trades-table">
-                    <thead><tr><th>Trader</th><th>Market</th><th>Bet</th><th>Side</th><th>Amount</th><th>Price</th><th>Ends In</th><th>Time</th><th>Link</th></tr></thead>
+                    <thead><tr><th>Trader</th><th>Market</th><th>Bet</th><th>Side</th><th>Amount</th><th>Price</th><th class="timer-cell">Ends In</th><th>Time</th><th>Link</th></tr></thead>
                     <tbody id="trades-body"><tr><td colspan="9"><div style="padding:32px;text-align:center;"><div class="spinner"></div></div></td></tr></tbody>
                 </table>
             </div>
@@ -519,25 +520,39 @@
     async function fetchStats() { try{await fetch('/api/stats');}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
-    function betBadge(outcome, side) {
-        // Polymarket: outcome = "Yes"/"No" (the token), side = "BUY"/"SELL"
-        // BUY Yes = bullish (up/green), SELL Yes = bearish exit (down/red)
-        // BUY No  = bearish (down/red), SELL No  = bullish exit (up/green)
-        const o=(outcome||'').toLowerCase(), s=(side||'').toUpperCase();
+    function betBadge(outcome, side, price) {
+        // Polymarket outcomes: "Yes"/"No", "Up"/"Down", or custom text
+        // side: "BUY" = entering position, "SELL" = exiting position
+        const o=(outcome||'').trim(), oLow=o.toLowerCase(), s=(side||'').toUpperCase();
         if(!o && !s) return '<span class="bet-badge bet-unknown">--</span>';
 
-        let isBullish; // true = betting event happens (up), false = betting against (down)
-        if(o==='yes') isBullish = s==='BUY';
-        else if(o==='no') isBullish = s!=='BUY'; // BUY No = bearish, SELL No = bullish
-        else isBullish = s==='BUY';
+        // Determine if this is a bullish/positive outcome token
+        const positiveOutcomes = ['yes','up','over','higher','above','bull','long','true'];
+        const negativeOutcomes = ['no','down','under','lower','below','bear','short','false'];
+        const isPositiveToken = positiveOutcomes.includes(oLow);
+        const isNegativeToken = negativeOutcomes.includes(oLow);
 
+        // Determine display direction:
+        // BUY a positive token (Yes/Up) = bullish
+        // SELL a positive token = exiting bullish (bearish action)
+        // BUY a negative token (No/Down) = bearish
+        // SELL a negative token = exiting bearish (bullish action)
+        let isBullish;
+        if(isPositiveToken) isBullish = s==='BUY';
+        else if(isNegativeToken) isBullish = s!=='BUY';
+        else isBullish = s==='BUY'; // unknown outcome, default by side
+
+        // Price in cents for the badge
+        const priceCents = price ? (parseFloat(price)*100).toFixed(0)+'c' : '';
+
+        // Use the actual outcome name as label (Up/Down/Yes/No)
+        const displayLabel = o || (isBullish ? 'YES' : 'NO');
         const arrow = isBullish
             ? '<span class="bet-arrow" style="color:var(--green);">&#9650;</span>'
             : '<span class="bet-arrow" style="color:var(--red);">&#9660;</span>';
         const cls = isBullish ? 'bet-yes' : 'bet-no';
-        const label = isBullish ? 'YES' : 'NO';
-        const detail = outcome ? `<span style="font-weight:400;font-size:9px;opacity:0.7;margin-left:2px;">${s} ${outcome}</span>` : '';
-        return `<span class="bet-badge ${cls}">${arrow} ${label}${detail}</span>`;
+        const priceHtml = priceCents ? `<span style="font-weight:400;font-size:10px;opacity:0.8;margin-left:3px;">${priceCents}</span>` : '';
+        return `<span class="bet-badge ${cls}">${arrow} ${displayLabel}${priceHtml}</span>`;
     }
     function renderTrades() {
         const tbody=document.getElementById('trades-body'); let filtered=allTrades;
@@ -551,7 +566,7 @@
             const tier=tierClass(parseFloat(t.usdc_size||0));
             const dir=t.direction||((t.side||'').toUpperCase()==='BUY'?'OPEN':'CLOSE');
             const dirBadge=`<span class="dir-badge dir-${dir}">${dir}</span>`;
-            const bet=betBadge(t.outcome, t.side);
+            const bet=betBadge(t.outcome, t.side, t.price);
             const endDate=t.end_date||'';
             const timerHtml=endDate
                 ?`<span data-end-date="${endDate}">${formatTimer(endDate)}</span>`
@@ -564,12 +579,15 @@
     }
     // Auto-fetch end dates for trades missing them
     const _endDateFetching = new Set();
+    const _marketMetaCache = {}; // cid -> {end_date, outcomes, outcome_prices, ...}
     async function fetchEndDate(el,cid) {
         if(_endDateFetching.has(cid)) return;
         _endDateFetching.add(cid);
         if(el) el.textContent='...';
         try{const r=await fetch('/api/market-end-date/'+cid);const d=await r.json();
         if(d.end_date){
+            // Cache metadata
+            _marketMetaCache[cid] = d;
             // Update all matching elements in the DOM
             document.querySelectorAll(`[data-cid="${cid}"]`).forEach(span=>{
                 span.setAttribute('data-end-date',d.end_date);
@@ -578,8 +596,8 @@
                 span.style.cursor='default';
             });
             // Update allTrades + allCopyTrades caches
-            allTrades.forEach(t=>{if(t.condition_id===cid)t.end_date=d.end_date;});
-            allCopyTrades.forEach(t=>{if(t.condition_id===cid)t.end_date=d.end_date;});
+            allTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
+            allCopyTrades.forEach(t=>{if(t.condition_id===cid){t.end_date=d.end_date;t._meta=d;}});
         }else{
             document.querySelectorAll(`[data-cid="${cid}"]`).forEach(span=>{span.textContent='N/A';span.style.cursor='default';});
         }}catch(e){
@@ -609,14 +627,16 @@
     function filterCopyTrades(f) { ctFilter=f; document.querySelectorAll('[data-ctf]').forEach(b=>b.classList.toggle('active',b.dataset.ctf===f)); renderCopyTrades(); }
     function formatTimer(endDate) {
         if(!endDate)return'';
-        const end=new Date(endDate).getTime(), now=Date.now(), diff=end-now;
-        if(diff<=0) return '<span class="event-timer" style="color:var(--red);">Ended</span>';
+        const end=new Date(endDate), now=new Date(), diff=end.getTime()-now.getTime();
+        // Format the actual end time
+        const endTimeStr=end.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
+        if(diff<=0) return `<div class="event-timer" style="color:var(--red);">Ended</div><div style="font-size:9px;color:var(--text-dim);margin-top:1px;">${endTimeStr}</div>`;
         const d=Math.floor(diff/86400000), h=Math.floor((diff%86400000)/3600000), m=Math.floor((diff%3600000)/60000), s=Math.floor((diff%60000)/1000);
-        let str='', color='var(--cyan)';
-        if(d>0) str=d+'d '+h+'h';
-        else if(h>0) str=h+'h '+m+'m';
-        else { str=m+'m '+s+'s'; color=m<5?'var(--red)':m<15?'var(--orange)':'var(--yellow)'; }
-        return `<span class="event-timer" style="color:${color};">${str}</span>`;
+        let countdown='', color='var(--cyan)';
+        if(d>0){ countdown=d+'d '+h+'h '+m+'m'; }
+        else if(h>0){ countdown=h+'h '+m+'m '+s+'s'; color=h<2?'var(--yellow)':'var(--cyan)'; }
+        else { countdown=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); color=m<5?'var(--red)':m<15?'var(--orange)':'var(--yellow)'; }
+        return `<div class="event-timer" style="color:${color};font-size:${d>0||h>0?'10px':'13px'};">${countdown}</div><div style="font-size:9px;color:var(--text-dim);margin-top:1px;white-space:nowrap;">${endTimeStr}</div>`;
     }
     function updateEventTimers() {
         document.querySelectorAll('[data-end-date]').forEach(el=>{
@@ -671,7 +691,7 @@
             else timerHtml='<span style="font-size:10px;color:var(--text-dim);">--</span>';
 
             // Bet badge
-            const betHtml=betBadge(t.outcome, t.side);
+            const betHtml=betBadge(t.outcome, t.side, t.price);
 
             // Action column
             let actionTd='';
