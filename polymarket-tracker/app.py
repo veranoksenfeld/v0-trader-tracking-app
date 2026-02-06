@@ -424,6 +424,7 @@ def init_db():
             ('result', 'TEXT', "'OPEN'"),
             ('mock', 'INTEGER', '0'),
             ('end_date', 'TEXT', 'NULL'),
+            ('resolved_outcome', 'TEXT', "''"),
         ]),
     ]:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -772,6 +773,31 @@ def copy_trading_loop():
                 trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
                 market_title = trade.get('title', 'Unknown')
 
+                # Only open NEW positions when the market just started
+                # Check if this is a BUY (opening) and if the market already has activity
+                only_new_markets = config.get('only_new_markets', True)
+                if only_new_markets and side_str == 'BUY' and trade.get('condition_id'):
+                    meta = get_market_metadata(trade['condition_id'])
+                    if meta:
+                        # Check event_start_time or start_date - only copy if market started recently (within 2 minutes)
+                        event_start = meta.get('event_start_time') or meta.get('start_date') or ''
+                        if event_start:
+                            try:
+                                start_dt = datetime.fromisoformat(event_start.replace('Z', '+00:00'))
+                                now_utc = datetime.now(start_dt.tzinfo) if start_dt.tzinfo else datetime.utcnow()
+                                minutes_since_start = (now_utc - start_dt).total_seconds() / 60
+                                max_age_minutes = config.get('new_market_max_age_minutes', 2)
+                                if minutes_since_start > max_age_minutes:
+                                    log_event('ENGINE', 'SKIP',
+                                              f'Market not new - started {minutes_since_start:.0f}m ago (max {max_age_minutes}m)',
+                                              f'{market_title[:50]}')
+                                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                                    config[ts_key] = trade['timestamp']
+                                    save_config(config)
+                                    continue
+                            except Exception as e:
+                                log_event('ENGINE', 'WARN', f'Could not parse market start time: {event_start}', str(e))
+
                 # Update market cache
                 if trade.get('condition_id'):
                     market_cache.set(trade['condition_id'], {
@@ -1099,23 +1125,25 @@ def check_resolved_markets():
                 pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
                 actual_result = 'WIN' if pnl >= 0 else 'LOSS'
 
+                resolved_out = winning_outcome or ''
+
                 if auto_close:
-                    # Auto-close: mark as closed with result
+                    # Auto-close: mark as closed with result and resolved outcome
                     cursor.execute('''
                         UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?,
-                        current_price = ?, pnl = ?, pnl_pct = ?
+                        current_price = ?, pnl = ?, pnl_pct = ?, resolved_outcome = ?
                         WHERE id = ?
                     ''', (datetime.now().isoformat(), actual_result, final_price,
-                          round(pnl, 4), round(pnl_pct, 2), trade['id']))
+                          round(pnl, 4), round(pnl_pct, 2), resolved_out, trade['id']))
                     log_event('ENGINE', actual_result,
                               f'Market resolved - auto-closed trade #{trade["id"]}',
                               f'Outcome: {winning_outcome or "?"} | Entry: {entry_price:.2f} Final: {final_price:.2f} PnL: ${pnl:.2f}')
                 else:
-                    # Don't close - just update current_price and PnL for display
+                    # Don't close - just update current_price, PnL, and resolved_outcome for display
                     cursor.execute('''
-                        UPDATE copy_trades SET current_price = ?, pnl = ?, pnl_pct = ?
+                        UPDATE copy_trades SET current_price = ?, pnl = ?, pnl_pct = ?, resolved_outcome = ?
                         WHERE id = ?
-                    ''', (final_price, round(pnl, 4), round(pnl_pct, 2), trade['id']))
+                    ''', (final_price, round(pnl, 4), round(pnl_pct, 2), resolved_out, trade['id']))
                     log_event('ENGINE', 'INFO',
                               f'Market resolved - trade #{trade["id"]} PnL updated (not auto-closed)',
                               f'Outcome: {winning_outcome or "?"} | Entry: {entry_price:.2f} Final: {final_price:.2f} PnL: ${pnl:.2f}')

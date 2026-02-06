@@ -277,6 +277,8 @@
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
                         <div class="status-row"><span class="label">Prob Sizing</span><span class="value"><div class="toggle" id="prob-toggle" onclick="toggleProbSizing()" style="width:36px;height:20px;"></div></span></div>
                         <div class="status-row"><span class="label">Auto-Close on Resolve</span><span class="value"><div class="toggle" id="autoclose-toggle" onclick="toggleAutoClose()" style="width:36px;height:20px;"></div></span></div>
+                        <div class="status-row"><span class="label">Only New Markets</span><span class="value"><div class="toggle active" id="newmarket-toggle" onclick="toggleOnlyNewMarkets()" style="width:36px;height:20px;"></div></span></div>
+                        <div class="status-row"><span class="label">New Market Max Age (min)</span><span class="value"><input type="number" id="new-market-age" value="2" min="1" max="30" style="width:50px;padding:4px 6px;background:var(--bg-input);border:1px solid var(--border);border-radius:4px;color:var(--text);font-size:12px;text-align:center;" onchange="updateNewMarketAge(this.value)"></span></div>
                         <div class="status-row"><span class="label">Last Check</span><span class="value" style="font-size:11px;color:var(--text-dim);" id="last-check">--</span></div>
                     </div>
                 </div>
@@ -413,7 +415,7 @@
             const cb=t.copy_trading_enabled?'<span class="badge badge-copy">COPY</span>':'';
             const wr=t.win_rate||0;
             const wrHtml=wr>0?`<span style="color:${wrColor(wr)};font-size:10px;font-weight:600;">${wr}% WR</span>`:'';
-            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="btn btn-sm btn-outline" style="padding:2px 6px;font-size:9px;margin-right:4px;" onclick="event.stopPropagation();fetchTraderTrades(${t.id})" title="Refresh trades">Fetch</button><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
+            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
         }).join('');
     }
     async function addTrader() { const v=document.getElementById('wallet-input').value.trim(); if(!v){showToast('Enter a wallet','error');return;} try{const r=await fetch('/api/traders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet_address:v})}); const res=await r.json(); if(r.ok){showToast('Wallet added - fetching trades...','success');document.getElementById('wallet-input').value='';fetchTraders();fetchStats();setTimeout(()=>{fetchTrades();fetchTraders();},3000);setTimeout(()=>{fetchTrades();fetchTraders();},8000);}else showToast(res.error,'error');}catch(e){showToast('Error','error');} }
@@ -542,6 +544,14 @@
         const next=!config.auto_close_on_resolve;
         try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({auto_close_on_resolve:next})}); if(r.ok){config.auto_close_on_resolve=next;document.getElementById('autoclose-toggle').classList.toggle('active',next);showToast(next?'Auto-close on resolve ON':'Auto-close on resolve OFF - trades stay open','info');}}catch(e){}
     }
+    async function toggleOnlyNewMarkets() {
+        const next=!(config.only_new_markets!==false);
+        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({only_new_markets:next})}); if(r.ok){config.only_new_markets=next;document.getElementById('newmarket-toggle').classList.toggle('active',next);showToast(next?'Only new markets ON - positions open only at market start':'Only new markets OFF - positions open on any trade','info');}}catch(e){}
+    }
+    async function updateNewMarketAge(val) {
+        const v=parseInt(val)||2;
+        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_market_max_age_minutes:v})}); if(r.ok){config.new_market_max_age_minutes=v;showToast(`New market max age set to ${v} minutes`,'info');}}catch(e){}
+    }
     async function updateStrategy() {
         const v=document.getElementById('strategy-select').value;
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_strategy:v})});config.copy_strategy=v;showToast('Strategy: '+v,'success');toggleStrategyFields(v);}catch(e){}
@@ -603,6 +613,8 @@
         document.getElementById('strategy-select').value=config.copy_strategy||'PERCENTAGE';
         document.getElementById('prob-toggle').classList.toggle('active',!!config.prob_sizing_enabled);
         document.getElementById('autoclose-toggle').classList.toggle('active',!!config.auto_close_on_resolve);
+        document.getElementById('newmarket-toggle').classList.toggle('active',config.only_new_markets!==false);
+        document.getElementById('new-market-age').value=config.new_market_max_age_minutes||2;
         toggleStrategyFields(config.copy_strategy||'PERCENTAGE');
         updateStatus();updateMockUI();renderWallet();}catch(e){}
     }
@@ -755,7 +767,11 @@
                 const ctSideBadge=sideStr==='BUY'?'<span class="side-buy-badge">BUY</span>':sideStr==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideStr||'--'}</span>`;
                 const ctOutcome=outcomeBadge(t.outcome,t.side);
                 const groupBorder=g.timeWindow&&g.trades.length>1?'border-left:3px solid rgba(99,102,241,0.2);':'';
-                rows+=`<tr style="${groupBorder}"><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a><div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${ctOutcome}</td><td>${ctSideBadge}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
+                // Show resolved event outcome
+                const resolvedOut=t.resolved_outcome||'';
+                const ourOut=t.outcome||'';
+                const resolvedBadge=resolvedOut?`<span style="display:inline-block;padding:1px 6px;border-radius:3px;font-size:9px;font-weight:700;margin-left:4px;${ourOut&&resolvedOut.toLowerCase()===ourOut.toLowerCase()?'background:var(--green-dim);color:var(--green);':'background:var(--red-dim);color:var(--red);'}">${ourOut&&resolvedOut.toLowerCase()===ourOut.toLowerCase()?'WON':'LOST'}: ${resolvedOut}</span>`:'';
+                rows+=`<tr style="${groupBorder}"><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${resolvedBadge}<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${ctOutcome}</td><td>${ctSideBadge}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
             });
         });
         el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Entry</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${rows}</tbody></table>`;
@@ -841,12 +857,18 @@
                 const lastClosed=g.trades.reduce((latest,t)=>{const d=new Date(t.closed_at||0);return d>latest?d:latest;},new Date(0));
                 const groupBorder=tg.timeWindow&&tg.entries.length>1?'border-left:3px solid rgba(99,102,241,0.2);margin-left:8px;':'';
 
+                // Show the final resolved outcome from the event
+                const resolvedOutcome=g.trades.map(t=>t.resolved_outcome).find(r=>r)||'';
+                const ourOutcome=g.outcome||g.trades[0]?.outcome||'';
+                const eventResultHtml=resolvedOutcome?`<span style="display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;${ourOutcome&&resolvedOutcome.toLowerCase()===ourOutcome.toLowerCase()?'background:var(--green-dim);color:var(--green);':'background:var(--red-dim);color:var(--red);'}">${ourOutcome&&resolvedOutcome.toLowerCase()===ourOutcome.toLowerCase()?'Won':'Lost'}: ${resolvedOutcome}</span>`:'';
+
                 html+=`<div class="closed-summary-row" style="${groupBorder}">
                     <div class="closed-icon">${iconHtml}</div>
                     <div class="closed-info">
                         <div class="title"><a href="${link}" target="_blank" style="color:var(--text);">${g.market_title||'Unknown Market'}</a></div>
                         <div class="meta">
                             <span>${g.outcome||''}</span>
+                            ${eventResultHtml}
                             <span style="color:${resultColor};font-weight:600;">${resultLabel}</span>
                             <span>${tradeCount} trade${tradeCount!==1?'s':''}</span>
                             <span>Bet: ${formatUSD(g.total_bet)}</span>
