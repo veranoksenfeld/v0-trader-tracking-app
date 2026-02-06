@@ -213,7 +213,7 @@
         <div class="panel-center">
             <!-- Dashboard -->
             <div class="page active" id="page-copy">
-                <div class="info-banner warn" id="no-wallet-banner" style="display:none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><p>No wallet configured. Run <code>python setup_config.py</code> then restart <code>python app.py</code>.</p></div>
+                <div class="info-banner warn" id="no-wallet-banner" style="display:none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><p>No wallet configured. Use the setup form in the Wallet card below, or enable Mock Mode to test.</p></div>
 
                 <!-- PnL Summary Cards -->
                 <div class="pnl-summary" id="pnl-summary">
@@ -481,7 +481,53 @@
             el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value" style="color:var(--orange);"><span class="dot warn"></span>Mock Mode</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="color:var(--text-dim);">Not required</span></div><div class="status-row"><span class="label">Balance</span><span class="value" style="color:var(--text-dim);">Simulated</span></div>`;
         } else {
             banner.style.display='flex';document.getElementById('header-balance').style.display='none';
-            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div><div style="margin-top:12px;"><div class="info-banner info" style="margin-bottom:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><p>Run <code>python setup_config.py</code> to configure, or enable Mock Mode to test.</p></div></div>`;
+            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div>
+            <div style="margin-top:12px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:14px;background:rgba(255,255,255,0.02);">
+                <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text);">Wallet Setup</div>
+                <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Get your private key from <a href="https://reveal.polymarket.com" target="_blank" style="color:var(--accent);">reveal.polymarket.com</a></div>
+                <div style="margin-bottom:8px;">
+                    <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">Private Key</label>
+                    <input type="text" id="setup-pk" placeholder="0x..." style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;color:var(--text);font-family:monospace;font-size:12px;outline:none;" autocomplete="off">
+                </div>
+                <div style="margin-bottom:8px;">
+                    <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">Funder / Proxy Address</label>
+                    <input type="text" id="setup-funder" placeholder="0x..." style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;color:var(--text);font-family:monospace;font-size:12px;outline:none;" autocomplete="off">
+                </div>
+                <div style="margin-bottom:12px;">
+                    <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">Signature Type</label>
+                    <select id="setup-sigtype" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;color:var(--text);font-size:12px;outline:none;">
+                        <option value="1">1 - Email / Magic Wallet</option>
+                        <option value="2">2 - Browser Wallet (MetaMask)</option>
+                    </select>
+                </div>
+                <button onclick="submitSetup()" style="width:100%;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Connect Wallet</button>
+                <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--text-dim);">Or enable <strong style="color:var(--orange);cursor:pointer;" onclick="toggleMock()">Mock Mode</strong> to test without a wallet</div>
+            </div>`;
+        }
+    }
+
+    // ---- Wallet Setup from Dashboard ----
+    async function submitSetup() {
+        const pk = (document.getElementById('setup-pk')?.value||'').trim();
+        const funder = (document.getElementById('setup-funder')?.value||'').trim().toLowerCase();
+        const sigType = parseInt(document.getElementById('setup-sigtype')?.value||'1');
+        if(!pk){showToast('Private key is required','error');return;}
+        if(!funder||!funder.startsWith('0x')||funder.length!==42){showToast('Invalid funder address (0x + 40 hex chars)','error');return;}
+        try {
+            const r = await fetch('/api/config/credentials', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({private_key: pk, funder_address: funder, signature_type: sigType})
+            });
+            const res = await r.json();
+            if(r.ok && res.success) {
+                showToast('Wallet connected successfully!', 'success');
+                setTimeout(loadConfig, 500);
+            } else {
+                showToast(res.error || 'Failed to save credentials', 'error');
+            }
+        } catch(e) {
+            showToast('Connection error', 'error');
         }
     }
 

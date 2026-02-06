@@ -47,6 +47,7 @@ def get_usdc_balance(funder_address):
 def setup():
     print("=" * 60)
     print("  Polymarket Copy Trader - Setup")
+    print("  (You can also configure via the web dashboard)")
     print("=" * 60)
     print()
 

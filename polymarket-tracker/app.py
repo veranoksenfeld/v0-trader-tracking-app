@@ -1034,9 +1034,20 @@ def update_credentials():
     config['private_key'] = pk
     config['funder_address'] = fa
     config['signature_type'] = int(st) if st is not None else 1
+    # Also accept optional copy trading settings during setup
+    if 'copy_percentage' in data:
+        config['copy_percentage'] = max(1, min(100, int(data['copy_percentage'])))
+    if 'max_trade_size' in data:
+        config['max_trade_size'] = max(1, float(data['max_trade_size']))
+    if 'min_trade_size' in data:
+        config['min_trade_size'] = max(0, float(data['min_trade_size']))
+    if 'copy_trading_enabled' in data:
+        config['copy_trading_enabled'] = bool(data['copy_trading_enabled'])
     save_config(config)
-    log_event('APP', 'INFO', 'Credentials updated', f'Funder: {fa[:10]}...')
-    return jsonify({'success': True})
+    # Test wallet balance
+    balance = get_usdc_balance(fa)
+    log_event('APP', 'INFO', 'Credentials updated via dashboard', f'Funder: {fa} | Balance: ${balance:.2f}')
+    return jsonify({'success': True, 'balance': round(balance, 2)})
 
 
 @app.route('/api/balance', methods=['GET'])
