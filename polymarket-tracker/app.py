@@ -13,9 +13,17 @@ import threading
 import random
 import requests as req
 
+# Import fetcher functions for Alchemy-based trade fetching
+try:
+    from fetcher import fetch_trades_for_trader as fetcher_fetch, resolve_proxy_wallet, update_trader_profile as fetcher_update_profile
+    FETCHER_AVAILABLE = True
+except ImportError:
+    FETCHER_AVAILABLE = False
+
 app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
+ALCHEMY_API_KEY = os.environ.get('ALCHEMY_API_KEY', '')
 
 # ---- Serialised DB write lock (prevents "database is locked") ----
 _db_write_lock = threading.Lock()
@@ -1139,57 +1147,25 @@ def add_trader():
         try:
             c = get_db()
             # Fetch profile
-            profile = req.get('https://gamma-api.polymarket.com/public-profile',
-                              params={'address': wallet}, timeout=10)
-            if profile.status_code == 200:
-                p = profile.json()
-                c.execute('''UPDATE traders SET name=?, pseudonym=?, bio=?, profile_image=?,
-                    x_username=?, verified_badge=?, created_at=? WHERE id=?''',
-                    (p.get('name'), p.get('pseudonym'), p.get('bio'), p.get('profileImage'),
-                     p.get('xUsername'), 1 if p.get('verifiedBadge') else 0, p.get('createdAt'), tid))
-                c.commit()
+            try:
+                profile = req.get('https://gamma-api.polymarket.com/public-profile',
+                                  params={'address': wallet}, timeout=10)
+                if profile.status_code == 200:
+                    p = profile.json()
+                    c.execute('''UPDATE traders SET name=?, pseudonym=?, bio=?, profile_image=?,
+                        x_username=?, verified_badge=?, created_at=? WHERE id=?''',
+                        (p.get('name'), p.get('pseudonym'), p.get('bio'), p.get('profileImage'),
+                         p.get('xUsername'), 1 if p.get('verifiedBadge') else 0, p.get('createdAt'), tid))
+                    c.commit()
+            except Exception:
+                pass
 
-            # Fetch trades using both profile address and proxy wallet
-            addresses = [wallet]
-            if profile.status_code == 200:
-                proxy = (profile.json().get('proxyWallet') or '').lower()
-                if proxy and proxy != wallet:
-                    addresses.append(proxy)
+            # Use fetcher module (Alchemy + Activity API)
+            if FETCHER_AVAILABLE:
+                total_new = fetcher_fetch(tid, wallet, c, limit=100)
+            else:
+                total_new = 0
 
-            total_new = 0
-            for addr in addresses:
-                try:
-                    r = req.get('https://data-api.polymarket.com/activity',
-                                params={'user': addr, 'type': 'TRADE', 'limit': 100}, timeout=15)
-                    if r.status_code == 200:
-                        trades = r.json()
-                        if isinstance(trades, list):
-                            for trade in trades:
-                                tx = trade.get('transactionHash')
-                                if not tx:
-                                    continue
-                                cur = c.cursor()
-                                cur.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx,))
-                                if cur.fetchone():
-                                    continue
-                                side = (trade.get('side') or '').upper()
-                                direction = 'OPEN' if side == 'BUY' else 'CLOSE'
-                                cid = trade.get('conditionId') or ''
-                                end_date = get_market_end_date(cid) if cid else ''
-                                cur.execute('''INSERT INTO trades (trader_id, transaction_hash, side, size, price,
-                                    usdc_size, timestamp, title, slug, icon, event_slug, outcome,
-                                    outcome_index, condition_id, asset, direction, end_date)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                                    (tid, tx, trade.get('side'), trade.get('size'), trade.get('price'),
-                                     trade.get('usdcSize'), trade.get('timestamp'),
-                                     trade.get('title'), trade.get('slug'), trade.get('icon'),
-                                     trade.get('eventSlug'), trade.get('outcome'),
-                                     trade.get('outcomeIndex'), cid,
-                                     trade.get('asset'), direction, end_date))
-                                total_new += 1
-                except Exception:
-                    pass
-            c.commit()
             c.close()
             if total_new:
                 log_event('APP', 'INFO', f'Initial fetch: {total_new} trade(s) for {wallet[:10]}...')
@@ -1217,51 +1193,10 @@ def fetch_trader_trades(trader_id):
     def _bg():
         try:
             c = get_db()
-            addresses = [wallet]
-            try:
-                profile = req.get('https://gamma-api.polymarket.com/public-profile',
-                                  params={'address': wallet}, timeout=10)
-                if profile.status_code == 200:
-                    proxy = (profile.json().get('proxyWallet') or '').lower()
-                    if proxy and proxy != wallet:
-                        addresses.append(proxy)
-            except Exception:
-                pass
-
-            total_new = 0
-            for addr in addresses:
-                try:
-                    r = req.get('https://data-api.polymarket.com/activity',
-                                params={'user': addr, 'type': 'TRADE', 'limit': 100}, timeout=15)
-                    if r.status_code == 200:
-                        trades = r.json()
-                        if isinstance(trades, list):
-                            for trade in trades:
-                                tx = trade.get('transactionHash')
-                                if not tx:
-                                    continue
-                                cur = c.cursor()
-                                cur.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx,))
-                                if cur.fetchone():
-                                    continue
-                                side = (trade.get('side') or '').upper()
-                                direction = 'OPEN' if side == 'BUY' else 'CLOSE'
-                                cid = trade.get('conditionId') or ''
-                                end_date = get_market_end_date(cid) if cid else ''
-                                cur.execute('''INSERT INTO trades (trader_id, transaction_hash, side, size, price,
-                                    usdc_size, timestamp, title, slug, icon, event_slug, outcome,
-                                    outcome_index, condition_id, asset, direction, end_date)
-                                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                                    (trader_id, tx, trade.get('side'), trade.get('size'), trade.get('price'),
-                                     trade.get('usdcSize'), trade.get('timestamp'),
-                                     trade.get('title'), trade.get('slug'), trade.get('icon'),
-                                     trade.get('eventSlug'), trade.get('outcome'),
-                                     trade.get('outcomeIndex'), cid,
-                                     trade.get('asset'), direction, end_date))
-                                total_new += 1
-                except Exception:
-                    pass
-            c.commit()
+            if FETCHER_AVAILABLE:
+                total_new = fetcher_fetch(trader_id, wallet, c, limit=100)
+            else:
+                total_new = 0
             c.close()
             if total_new:
                 log_event('APP', 'INFO', f'Manual fetch: {total_new} new trade(s) for {wallet[:10]}...')
@@ -1387,7 +1322,9 @@ def get_stats():
     conn.close()
     return jsonify({
         'trader_count': trader_count, 'trade_count': trade_count,
-        'total_volume': round(total_volume, 2), 'last_fetch': last_fetch
+        'total_volume': round(total_volume, 2), 'last_fetch': last_fetch,
+        'fetcher_mode': 'Alchemy' if ALCHEMY_API_KEY else 'Activity API',
+        'alchemy_configured': bool(ALCHEMY_API_KEY),
     })
 
 
@@ -1808,6 +1745,7 @@ if __name__ == '__main__':
     print("=" * 60)
     print("  Polymarket Copy Trader")
     print("  Dashboard: http://localhost:5000")
+    print(f"  Fetcher: {'Alchemy (Polygon)' if ALCHEMY_API_KEY else 'Activity API (set ALCHEMY_API_KEY for on-chain)'}")
     print(f"  CLOB client: {'Available' if CLOB_AVAILABLE else 'Not installed (mock only)'}")
     print("  Copy engine running in background")
     print("=" * 60)

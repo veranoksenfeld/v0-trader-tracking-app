@@ -224,6 +224,7 @@
         </div>
         <div class="topbar-right">
             <div class="mock-badge" id="mock-badge" style="display:none;">MOCK</div>
+            <div class="live-badge" id="fetcher-badge" title="Trade data source"><span style="font-size:10px;color:var(--text-dim);">Fetcher:</span> <span id="fetcher-mode-badge" style="font-weight:600;">...</span></div>
             <div class="engine-badge on" id="engine-badge"><div class="live-dot" id="engine-dot" style="background:var(--green);"></div><span id="engine-label">Engine Running</span></div>
             <div class="live-badge" id="stream-status"><div class="live-dot" id="stream-dot"></div><span id="stream-label">Connecting...</span></div>
             <div class="balance-chip" id="header-balance" style="display:none;"><span class="label">USDC</span><span id="header-balance-amount">$0.00</span></div>
@@ -525,7 +526,7 @@
     }
 
     // ---- Stats & Trades ----
-    async function fetchStats() { try{await fetch('/api/stats');}catch(e){} }
+    async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color=s.alchemy_configured?'var(--green)':'var(--orange)';}}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
     function betBadge(outcome, side, price) {
