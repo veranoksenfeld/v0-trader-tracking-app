@@ -835,7 +835,8 @@ def copy_trading_loop():
                 if not is_close_signal:
                     # Check max events limit (only for new open trades)
                     max_events = config.get('max_events', 0)
-                    if max_events > 0 and trade.get('condition_id'):
+                    max_per_event = config.get('max_trades_per_event', 0)
+                    if (max_events > 0 or max_per_event > 0) and trade.get('condition_id'):
                         conn2 = get_db()
                         c2 = conn2.cursor()
                         c2.execute("SELECT COUNT(DISTINCT condition_id) as c FROM copy_trades WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''")
@@ -844,8 +845,17 @@ def copy_trading_loop():
                                    (trade['condition_id'],))
                         already_in = c2.fetchone()['c']
                         conn2.close()
-                        if already_in == 0 and total_events >= max_events:
+                        # Skip if this is a new event and we're at the max events limit
+                        if max_events > 0 and already_in == 0 and total_events >= max_events:
                             log_event('ENGINE', 'SKIP', f'Max events limit reached ({total_events}/{max_events})',
+                                      f'{trade.get("title", "")[:50]}')
+                            ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                            config[ts_key] = trade['timestamp']
+                            save_config(config)
+                            continue
+                        # Skip if this event already has max trades per event
+                        if max_per_event > 0 and already_in >= max_per_event:
+                            log_event('ENGINE', 'SKIP', f'Max trades per event reached ({already_in}/{max_per_event})',
                                       f'{trade.get("title", "")[:50]}')
                             ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                             config[ts_key] = trade['timestamp']
@@ -1233,6 +1243,7 @@ def get_config():
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
         'max_events': config.get('max_events', 0),
+        'max_trades_per_event': config.get('max_trades_per_event', 0),
     }
     return jsonify(safe)
 
@@ -1267,6 +1278,9 @@ def update_config():
     if 'max_events' in data:
         config['max_events'] = max(0, int(data['max_events']))
         log_event('APP', 'INFO', f'Max events set to {config["max_events"]}')
+    if 'max_trades_per_event' in data:
+        config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
+        log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
     save_config(config)
     return jsonify({'success': True})
 

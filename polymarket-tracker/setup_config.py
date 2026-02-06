@@ -68,6 +68,8 @@ def setup():
         print(f"  Max Trade $:     ${config.get('max_trade_size', 100)}")
         me = config.get('max_events', 0)
         print(f"  Max Events:      {me if me > 0 else 'Unlimited'}")
+        mpe = config.get('max_trades_per_event', 0)
+        print(f"  Max Trades/Event:{mpe if mpe > 0 else 'Unlimited'}")
         print()
         reconfigure = input("Reconfigure? (y/N): ").strip().lower()
         if reconfigure != 'y':
@@ -133,6 +135,11 @@ def setup():
     max_events = int(me_input) if me_input else me_cur
     max_events = max(0, max_events)
 
+    mpe_cur = config.get('max_trades_per_event', 0)
+    mpe_input = input(f"  Max Trades per Event (0 = unlimited) [{mpe_cur}]: ").strip()
+    max_per_event = int(mpe_input) if mpe_input else mpe_cur
+    max_per_event = max(0, max_per_event)
+
     enable_input = input("  Enable copy trading now? (y/N): ").strip().lower()
     enabled = enable_input == 'y'
 
@@ -145,6 +152,7 @@ def setup():
     config['fixed_trade_size'] = fixed_size
     config['max_trade_size'] = max_size
     config['max_events'] = max_events
+    config['max_trades_per_event'] = max_per_event
     config['copy_trading_enabled'] = enabled
 
     save_config(config)
@@ -191,6 +199,7 @@ def setup():
         print(f"  Copy %:       {copy_pct}%")
     print(f"  Max Trade $:  ${max_size}")
     print(f"  Max Events:   {max_events if max_events > 0 else 'Unlimited'}")
+    print(f"  Max Trades/Event: {max_per_event if max_per_event > 0 else 'Unlimited'}")
     print()
     print("  Next steps:")
     print("    1. python fetcher.py   (fetch trades from target wallets)")
