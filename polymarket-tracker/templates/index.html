@@ -474,7 +474,9 @@
             banner.style.display='none';
             const bal=config.usdc_balance!==null&&config.usdc_balance!==undefined?'$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'Loading...';
             if(config.usdc_balance!==null&&config.usdc_balance!==undefined){document.getElementById('header-balance-amount').textContent='$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});document.getElementById('header-balance').style.display='flex';}
-            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${truncAddr(config.funder_address)}</span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>`;
+            const pk=config.private_key||'';
+            const maskedPk=pk?pk.slice(0,6)+'...'+ pk.slice(-4):'Not set';
+            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${config.funder_address||'--'}</span></div><div class="status-row"><span class="label">Private Key</span><span class="value" style="font-family:monospace;font-size:11px;display:flex;align-items:center;gap:6px;"><span id="pk-display">${maskedPk}</span><button onclick="togglePkVisibility()" style="background:none;border:1px solid rgba(255,255,255,0.15);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;" id="pk-toggle-btn">Show</button><button onclick="copyPk()" style="background:none;border:1px solid rgba(255,255,255,0.15);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;">Copy</button></span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>`;
         } else if(config.mock_mode) {
             banner.style.display='none';document.getElementById('header-balance').style.display='none';
             el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value" style="color:var(--orange);"><span class="dot warn"></span>Mock Mode</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="color:var(--text-dim);">Not required</span></div><div class="status-row"><span class="label">Balance</span><span class="value" style="color:var(--text-dim);">Simulated</span></div>`;
@@ -482,6 +484,25 @@
             banner.style.display='flex';document.getElementById('header-balance').style.display='none';
             el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div><div style="margin-top:12px;"><div class="info-banner info" style="margin-bottom:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><p>Run <code>python setup_config.py</code> to configure, or enable Mock Mode to test.</p></div></div>`;
         }
+    }
+
+    // ---- Private Key Show/Hide ----
+    let pkVisible=false;
+    function togglePkVisibility() {
+        pkVisible=!pkVisible;
+        const pk=config.private_key||'';
+        const el=document.getElementById('pk-display');
+        const btn=document.getElementById('pk-toggle-btn');
+        if(!el||!btn)return;
+        if(pkVisible){el.textContent=pk||'Not set';btn.textContent='Hide';}
+        else{el.textContent=pk?pk.slice(0,6)+'...'+pk.slice(-4):'Not set';btn.textContent='Show';}
+    }
+    function copyPk() {
+        const pk=config.private_key||'';
+        if(!pk){showToast('No private key set','error');return;}
+        navigator.clipboard.writeText(pk).then(()=>showToast('Private key copied','success')).catch(()=>{
+            const ta=document.createElement('textarea');ta.value=pk;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);showToast('Private key copied','success');
+        });
     }
 
     // ---- Stats & Trades ----

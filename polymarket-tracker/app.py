@@ -957,6 +957,7 @@ def get_config():
     if has_creds:
         usdc_balance = get_usdc_balance(funder)
 
+    pk = config.get('private_key', '')
     safe = {
         'copy_trading_enabled': config.get('copy_trading_enabled', False),
         'copy_percentage': config.get('copy_percentage', 10),
@@ -964,6 +965,7 @@ def get_config():
         'min_trade_size': config.get('min_trade_size', 10),
         'has_credentials': has_creds,
         'funder_address': funder,
+        'private_key': pk,
         'usdc_balance': round(usdc_balance, 2) if usdc_balance is not None else None,
         'engine_running': copy_engine['running'] and copy_engine['thread'] is not None and copy_engine['thread'].is_alive(),
         'trades_copied': copy_engine['trades_copied'],
