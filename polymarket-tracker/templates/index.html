@@ -346,7 +346,7 @@
 
             <!-- Trade Feed -->
             <div class="page" id="page-trades">
-                <div class="trades-header"><h2>Trade Feed</h2><div class="filter-buttons"><button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button><button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button><button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button></div></div>
+                <div class="trades-header"><h2>Trade Feed</h2><div style="display:flex;gap:8px;align-items:center;"><button class="btn btn-sm btn-outline" id="backfill-btn" onclick="backfillEndDates()" title="Fetch missing end times from Polymarket">Fix Timers</button><div class="filter-buttons"><button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button><button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button><button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button></div></div></div>
                 <table class="trades-table">
                     <thead><tr><th>Trader</th><th>Market</th><th>Bet</th><th>Side</th><th>Amount</th><th>Price</th><th class="timer-cell">Ends In</th><th>Time</th><th>Link</th></tr></thead>
                     <tbody id="trades-body"><tr><td colspan="9"><div style="padding:32px;text-align:center;"><div class="spinner"></div></div></td></tr></tbody>
@@ -528,6 +528,17 @@
     // ---- Stats & Trades ----
     async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color=s.alchemy_configured?'var(--green)':'var(--orange)';}}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
+    async function backfillEndDates() {
+        const btn=document.getElementById('backfill-btn');
+        if(btn){btn.disabled=true;btn.textContent='Fixing...';}
+        try{
+            const r=await fetch('/api/backfill-end-dates',{method:'POST'});
+            const d=await r.json();
+            if(btn) btn.textContent=d.updated+'/'+d.total_missing+' fixed';
+            // Reload trades to get updated end_dates
+            setTimeout(()=>{fetchTrades();if(btn){btn.disabled=false;btn.textContent='Fix Timers';}},1500);
+        }catch(e){if(btn){btn.disabled=false;btn.textContent='Fix Timers';}}
+    }
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
     function betBadge(outcome, side, price) {
         const o=(outcome||'').trim(), oLow=o.toLowerCase(), s=(side||'').toUpperCase();

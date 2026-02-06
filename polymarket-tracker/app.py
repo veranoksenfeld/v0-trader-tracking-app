@@ -388,23 +388,30 @@ def init_db():
 
     conn.commit()
 
-    # Backfill end_date for trades that have condition_id but no end_date
-    cursor.execute('''SELECT DISTINCT condition_id FROM trades
-                      WHERE condition_id IS NOT NULL AND condition_id != ''
-                      AND (end_date IS NULL OR end_date = '')
-                      LIMIT 30''')
-    backfill_cids = [row[0] for row in cursor.fetchall()]
-    if backfill_cids:
-        print(f"  Backfilling end_date for {len(backfill_cids)} condition_ids...")
-        for cid in backfill_cids:
+    # Backfill end_date for trades missing it - use both condition_id and asset (clob_token_id)
+    cursor.execute('''SELECT DISTINCT condition_id, asset FROM trades
+                      WHERE (end_date IS NULL OR end_date = '')
+                      AND (condition_id IS NOT NULL AND condition_id != '' OR asset IS NOT NULL AND asset != '')
+                      LIMIT 50''')
+    backfill_rows = cursor.fetchall()
+    if backfill_rows:
+        print(f"  Backfilling end_date for {len(backfill_rows)} markets...")
+        updated = 0
+        for row in backfill_rows:
             try:
-                ed = get_market_end_date(cid)
+                cid = row['condition_id'] or ''
+                asset = row['asset'] or ''
+                ed = get_market_end_date(cid, asset)
                 if ed:
-                    cursor.execute('UPDATE trades SET end_date = ? WHERE condition_id = ? AND (end_date IS NULL OR end_date = "")', (ed, cid))
+                    if cid:
+                        cursor.execute('UPDATE trades SET end_date = ? WHERE condition_id = ? AND (end_date IS NULL OR end_date = "")', (ed, cid))
+                    elif asset:
+                        cursor.execute('UPDATE trades SET end_date = ? WHERE asset = ? AND (end_date IS NULL OR end_date = "")', (ed, asset))
+                    updated += 1
             except Exception:
                 pass
         conn.commit()
-        print(f"  Backfill done")
+        print(f"  Backfill done: {updated}/{len(backfill_rows)} updated")
 
     conn.close()
 
@@ -864,16 +871,43 @@ _market_end_date_cache = {}
 _market_metadata_cache = {}  # condition_id -> {end_date, outcomes, description, question, ...}
 
 
-def get_market_end_date(condition_id):
-    """Fetch end date for a market from Gamma API. Cached."""
-    if not condition_id or not condition_id.strip():
+def get_market_end_date(condition_id, asset=None):
+    """Fetch end date for a market from Gamma API. Cached. Tries condition_id first, then asset (clob_token_id)."""
+    if not condition_id and not asset:
         return ''
-    condition_id = condition_id.strip()
-    if condition_id in _market_end_date_cache:
-        return _market_end_date_cache[condition_id]
-    # Also populate metadata cache
-    meta = get_market_metadata(condition_id)
-    return meta.get('end_date', '') if meta else ''
+    cid = (condition_id or '').strip()
+    if cid and cid in _market_end_date_cache:
+        v = _market_end_date_cache[cid]
+        if v:
+            return v
+    # Try condition_id lookup
+    if cid:
+        meta = get_market_metadata(cid)
+        if meta and meta.get('end_date'):
+            return meta['end_date']
+    # Fallback: try asset/clob_token_id lookup via Gamma
+    if asset:
+        asset = str(asset).strip()
+        cache_key = f'asset:{asset}'
+        if cache_key in _market_end_date_cache:
+            return _market_end_date_cache[cache_key]
+        try:
+            r = req.get('https://gamma-api.polymarket.com/markets',
+                        params={'clob_token_id': asset}, timeout=12)
+            if r.status_code == 200:
+                data = r.json()
+                markets = data if isinstance(data, list) else [data] if isinstance(data, dict) else []
+                if markets:
+                    ed = markets[0].get('endDate') or markets[0].get('end_date_iso') or ''
+                    if ed:
+                        _market_end_date_cache[cache_key] = ed
+                        if cid:
+                            _market_end_date_cache[cid] = ed
+                        return ed
+        except Exception:
+            pass
+        _market_end_date_cache[cache_key] = ''
+    return ''
 
 
 def get_market_metadata(condition_id):
@@ -944,7 +978,6 @@ def get_market_metadata(condition_id):
         _market_metadata_cache[condition_id] = meta
         return meta
     except Exception as e:
-        pass
         log_event('ENGINE', 'WARN', 'Market metadata fetch error', str(e))
     return None
 
@@ -1238,9 +1271,65 @@ def get_trades():
             ORDER BY t.timestamp DESC LIMIT ?
         ''', (limit,))
     trades = [dict(row) for row in cursor.fetchall()]
+
+    # On-the-fly backfill: if any trades are missing end_date, try to fill them now
+    missing = [t for t in trades if not t.get('end_date') and (t.get('condition_id') or t.get('asset'))]
+    if missing:
+        filled = 0
+        seen = set()
+        for t in missing[:15]:  # Limit to avoid slow responses
+            key = t.get('condition_id') or t.get('asset') or ''
+            if key in seen:
+                continue
+            seen.add(key)
+            ed = get_market_end_date(t.get('condition_id', ''), t.get('asset', ''))
+            if ed:
+                cid = t.get('condition_id', '')
+                asset_val = t.get('asset', '')
+                # Update DB in background
+                if cid:
+                    cursor.execute('UPDATE trades SET end_date = ? WHERE condition_id = ? AND (end_date IS NULL OR end_date = "")', (ed, cid))
+                elif asset_val:
+                    cursor.execute('UPDATE trades SET end_date = ? WHERE asset = ? AND (end_date IS NULL OR end_date = "")', (ed, asset_val))
+                # Update in-memory list too
+                for t2 in trades:
+                    if (cid and t2.get('condition_id') == cid) or (asset_val and t2.get('asset') == asset_val):
+                        t2['end_date'] = ed
+                filled += 1
+        if filled:
+            conn.commit()
+
     conn.close()
-    # end_date is now stored directly in the trades table
     return jsonify(trades)
+
+
+@app.route('/api/backfill-end-dates', methods=['POST'])
+def api_backfill_end_dates():
+    """Manually trigger end_date backfill for all trades missing it."""
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute('''SELECT DISTINCT condition_id, asset FROM trades
+                      WHERE (end_date IS NULL OR end_date = '')
+                      AND (condition_id IS NOT NULL AND condition_id != '' OR asset IS NOT NULL AND asset != '')''')
+    rows = cursor.fetchall()
+    total = len(rows)
+    updated = 0
+    for row in rows:
+        try:
+            cid = row['condition_id'] or ''
+            asset = row['asset'] or ''
+            ed = get_market_end_date(cid, asset)
+            if ed:
+                if cid:
+                    cursor.execute('UPDATE trades SET end_date = ? WHERE condition_id = ? AND (end_date IS NULL OR end_date = "")', (ed, cid))
+                elif asset:
+                    cursor.execute('UPDATE trades SET end_date = ? WHERE asset = ? AND (end_date IS NULL OR end_date = "")', (ed, asset))
+                updated += 1
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return jsonify({'total_missing': total, 'updated': updated})
 
 
 @app.route('/api/market-end-date-by-slug/<slug>', methods=['GET'])
