@@ -188,7 +188,7 @@
         .dir-REDUCE { background:rgba(234,179,8,0.12); color:var(--yellow); }
         .event-timer { font-size:10px; font-weight:700; font-family:'SF Mono',SFMono-Regular,Consolas,monospace; white-space:nowrap; }
 
-        .timer-cell { min-width:120px; }
+    
         .side-buy-badge { display:inline-block; padding:3px 8px; border-radius:5px; font-size:11px; font-weight:700; background:rgba(34,197,94,0.15); color:var(--green); border:1px solid rgba(34,197,94,0.2); }
         .side-sell-badge { display:inline-block; padding:3px 8px; border-radius:5px; font-size:11px; font-weight:700; background:rgba(239,68,68,0.15); color:var(--red); border:1px solid rgba(239,68,68,0.2); }
         .closed-section { margin-top:16px; }
@@ -342,10 +342,10 @@
 
             <!-- Trade Feed -->
             <div class="page" id="page-trades">
-                <div class="trades-header"><h2>Trade Feed</h2><div style="display:flex;gap:8px;align-items:center;"><button class="btn btn-sm btn-outline" id="backfill-btn" onclick="backfillEndDates()" title="Fetch missing end times from Polymarket">Fix Timers</button><div class="filter-buttons"><button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button><button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button><button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button></div></div></div>
+                <div class="trades-header"><h2>Trade Feed</h2><div style="display:flex;gap:8px;align-items:center;"><div class="filter-buttons"><button class="filter-btn active" data-filter="all" onclick="filterTrades('all')">All</button><button class="filter-btn" data-filter="BUY" onclick="filterTrades('BUY')">Buys</button><button class="filter-btn" data-filter="SELL" onclick="filterTrades('SELL')">Sells</button></div></div></div>
                 <table class="trades-table">
-                    <thead><tr><th>Trader</th><th>Market</th><th>Outcome</th><th>Side</th><th>Amount</th><th>Price</th><th class="timer-cell">Ends In</th><th>Time</th><th>Link</th></tr></thead>
-                    <tbody id="trades-body"><tr><td colspan="9"><div style="padding:32px;text-align:center;"><div class="spinner"></div></div></td></tr></tbody>
+                    <thead><tr><th>Trader</th><th>Market</th><th>Outcome</th><th>Side</th><th>Amount</th><th>Price</th><th>Time</th><th>Link</th></tr></thead>
+                    <tbody id="trades-body"><tr><td colspan="8"><div style="padding:32px;text-align:center;"><div class="spinner"></div></div></td></tr></tbody>
                 </table>
             </div>
 
@@ -524,17 +524,7 @@
     // ---- Stats & Trades ----
     async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color=s.alchemy_configured?'var(--green)':'var(--orange)';}}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
-    async function backfillEndDates() {
-        const btn=document.getElementById('backfill-btn');
-        if(btn){btn.disabled=true;btn.textContent='Fixing...';}
-        try{
-            const r=await fetch('/api/backfill-end-dates',{method:'POST'});
-            const d=await r.json();
-            if(btn) btn.textContent=d.updated+'/'+d.total_missing+' fixed';
-            // Reload trades to get updated end_dates
-            setTimeout(()=>{fetchTrades();if(btn){btn.disabled=false;btn.textContent='Fix Timers';}},1500);
-        }catch(e){if(btn){btn.disabled=false;btn.textContent='Fix Timers';}}
-    }
+
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
     function outcomeBadge(outcome, side) {
         const o=(outcome||'').trim(), oLow=o.toLowerCase(), s=(side||'').toUpperCase();
@@ -550,7 +540,7 @@
     function renderTrades() {
         const tbody=document.getElementById('trades-body'); let filtered=allTrades;
         if(currentFilter!=='all')filtered=allTrades.filter(t=>(t.side||'').toUpperCase()===currentFilter.toUpperCase());
-        if(!filtered.length){tbody.innerHTML='<tr><td colspan="9"><div class="empty-state"><h3>No trades yet</h3><p>Trades appear once fetcher detects activity</p></div></td></tr>';return;}
+        if(!filtered.length){tbody.innerHTML='<tr><td colspan="8"><div class="empty-state"><h3>No trades yet</h3><p>Trades appear once fetcher detects activity</p></div></td></tr>';return;}
         tbody.innerHTML=filtered.map(t=>{
             const name=t.name||t.pseudonym||truncAddr(t.wallet_address),init=name.charAt(0).toUpperCase();
             const av=t.profile_image?`<img src="${t.profile_image}" onerror="this.parentElement.innerHTML='${init}'">`  :init;
@@ -559,14 +549,10 @@
             const tier=tierClass(parseFloat(t.usdc_size||0));
             const dir=t.direction||((t.side||'').toUpperCase()==='BUY'?'OPEN':'CLOSE');
             const dirBadge=`<span class="dir-badge dir-${dir}">${dir}</span>`;
-            const endDate=t.end_date||'';
-            const timerHtml=endDate
-                ?`<div data-end-date="${endDate}" style="line-height:1.3;">${formatTimer(endDate)}</div>`
-                :'<div style="font-size:10px;color:var(--text-dim);">--</div>';
             const sideUp=(t.side||'').toUpperCase();
             const sideBadge=sideUp==='BUY'?'<span class="side-buy-badge">BUY</span>':sideUp==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideUp||'--'}</span>`;
             const oBadge=outcomeBadge(t.outcome,t.side);
-            return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome"><span class="tier-badge tier-${tier}">${tier}</span> ${dirBadge}</div></div></div></td><td>${oBadge}</td><td>${sideBadge}</td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td class="timer-cell">${timerHtml}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
+            return `<tr class="trade-row"><td><div class="trade-trader"><div class="trade-trader-avatar">${av}</div><span>${name}</span></div></td><td><div class="trade-market"><div class="trade-market-icon">${mi}</div><div><div class="trade-market-title">${t.title||'Unknown'}</div><div class="trade-market-outcome"><span class="tier-badge tier-${tier}">${tier}</span> ${dirBadge}</div></div></div></td><td>${oBadge}</td><td>${sideBadge}</td><td style="font-weight:500;">${formatUSD(t.usdc_size)}</td><td style="color:var(--text-dim);">${t.price?(t.price*100).toFixed(1)+'c':'-'}</td><td style="color:var(--text-dim);font-size:12px;">${formatTime(t.timestamp)}</td><td><a href="${link}" target="_blank" class="market-link">View</a></td></tr>`;
         }).join('');
     }
 
@@ -575,34 +561,7 @@
         try{const r=await fetch('/api/copy-trades'); allCopyTrades=await r.json(); renderCopyTrades(); renderClosedPositions(); fetchPnlSummary();}catch(e){}
     }
     function filterCopyTrades(f) { ctFilter=f; document.querySelectorAll('[data-ctf]').forEach(b=>b.classList.toggle('active',b.dataset.ctf===f)); renderCopyTrades(); }
-    function formatTimer(endDate) {
-        if(!endDate) return '';
-        // Parse robustly - handle ISO strings, unix timestamps, etc.
-        let end;
-        if(typeof endDate==='number') end=new Date(endDate>1e12?endDate:endDate*1000);
-        else end=new Date(endDate);
-        if(isNaN(end.getTime())) return '<span style="font-size:10px;color:var(--text-dim);">Bad date</span>';
 
-        const now=new Date(), diff=end.getTime()-now.getTime();
-        // Format the actual end time (always show this)
-        const endTimeStr=end.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',hour12:true,timeZoneName:'short'});
-
-        if(diff<=0) return '<span class="event-timer" style="color:var(--red);font-weight:700;">ENDED</span><br><span style="font-size:9px;color:var(--text-dim);">'+endTimeStr+'</span>';
-
-        const d=Math.floor(diff/86400000), h=Math.floor((diff%86400000)/3600000), m=Math.floor((diff%3600000)/60000), s=Math.floor((diff%60000)/1000);
-        let countdown='', color='var(--cyan)';
-        if(d>0){ countdown=d+'d '+h+'h '+m+'m'; }
-        else if(h>0){ countdown=h+'h '+m+'m '+s+'s'; color=h<2?'var(--yellow)':'var(--cyan)'; }
-        else { countdown=String(m).padStart(2,'0')+':'+String(s).padStart(2,'0'); color=m<5?'var(--red)':m<15?'var(--orange)':'var(--yellow)'; }
-        return '<span class="event-timer" style="color:'+color+';font-size:'+(d>0||h>0?'11px':'14px')+';font-weight:700;">'+countdown+'</span><br><span style="font-size:9px;color:var(--text-dim);white-space:nowrap;">'+endTimeStr+'</span>';
-    }
-    function updateEventTimers() {
-        document.querySelectorAll('[data-end-date]').forEach(el=>{
-            const ed=el.getAttribute('data-end-date');
-            if(ed) el.innerHTML=formatTimer(ed);
-        });
-    }
-    setInterval(updateEventTimers,1000);
 
     function renderCopyTrades() {
         const el=document.getElementById('copy-trades-content');
@@ -622,7 +581,7 @@
         });
         const eventSeen={};
 
-        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Entry</th><th>Ends In</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
+        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Entry</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
             const link=polyLink(t.market_slug,t.event_slug);
             const resultCls=t.result==='WIN'?'result-win':t.result==='LOSS'?'result-loss':'result-open';
             const pnlCls=t.pnl>0?'pnl-positive':t.pnl<0?'pnl-negative':'';
@@ -641,11 +600,6 @@
             const statusHtml=isClosed
                 ?'<span style="color:var(--text-dim);font-size:11px;font-weight:500;">Closed</span>'
                 :'<span style="color:var(--green);font-size:11px;font-weight:600;">Active</span>';
-
-            // Timer
-            const timerHtml=t.end_date
-                ?`<div data-end-date="${t.end_date}" style="line-height:1.3;">${formatTimer(t.end_date)}</div>`
-                :'<div style="font-size:10px;color:var(--text-dim);">--</div>';
 
             // Action column
             let actionTd='';
@@ -667,7 +621,7 @@
 
             const ctSideBadge=sideStr==='BUY'?'<span class="side-buy-badge">BUY</span>':sideStr==='SELL'?'<span class="side-sell-badge">SELL</span>':`<span style="color:var(--text-dim);">${sideStr||'--'}</span>`;
             const ctOutcome=outcomeBadge(t.outcome,t.side);
-            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${ctOutcome}</td><td>${ctSideBadge}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
+            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:220px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${tierBadge} ${dirBadge}</div></td><td>${ctOutcome}</td><td>${ctSideBadge}</td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
         }).join('')}</tbody></table>`;
         // Auto-fetch missing end dates
     }
