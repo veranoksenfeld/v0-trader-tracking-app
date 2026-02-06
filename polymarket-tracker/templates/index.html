@@ -652,16 +652,29 @@
         const entries=Object.values(grouped);
 
         const isMock=!!config.mock_mode;
-        el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Outcome</th><th>Avg</th><th>Size</th><th>Mode</th>${isMock?'':'<th></th>'}</tr></thead><tbody>${entries.map(g=>{
+        el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Avg</th><th>Current</th><th>Size / P&L</th><th>Mode</th>${isMock?'':'<th></th>'}</tr></thead><tbody>${entries.map(g=>{
             const link=polyLink(g.market_slug,g.event_slug);
             const iconHtml=g.icon?`<img src="${g.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
-            const outBadge=outcomeBadge(g.outcome,g.trades[0]?.side||'BUY');
             const avgPrice=g.total_size>0?(g.total_cost/g.total_size):0;
             const avgStr=(avgPrice*100).toFixed(1)+'c';
+            // Current price: use the latest trade's current_price if available, else use entry price
+            const latestTrade=g.trades.reduce((a,b)=>new Date(b.executed_at||0)>new Date(a.executed_at||0)?b:a,g.trades[0]);
+            const curPrice=parseFloat(latestTrade.current_price||latestTrade.price||0);
+            const curStr=(curPrice*100).toFixed(1)+'c';
+            // PnL: sum of individual trade pnls, or calculate from avg vs current
+            let pnl=0;
+            g.trades.forEach(t=>{
+                const ep=parseFloat(t.price||0);
+                const cp=parseFloat(t.current_price||t.price||0);
+                const sz=parseFloat(t.our_size||0);
+                pnl+=(cp-ep)*sz;
+            });
+            const pnlColor=pnl>=0?'var(--green)':'var(--red)';
+            const pnlSign=pnl>=0?'+':'';
             const isTradeMock=g.trades[0]?.mock;
             const modeBadge=isTradeMock?'<span style="color:var(--orange);font-size:11px;font-weight:600;">MOCK</span>':'<span style="color:var(--green);font-size:11px;font-weight:600;">LIVE</span>';
             const actionHtml=isMock?'':`<td>${g.trades.filter(t=>t.result==='OPEN').map(t=>`<button class="btn btn-sm btn-success" style="padding:2px 6px;font-size:9px;margin-right:2px;" onclick="closeTrade(${t.id},1)" title="Win">W</button><button class="btn btn-sm btn-danger" style="padding:2px 6px;font-size:9px;" onclick="closeTrade(${t.id},0)" title="Loss">L</button>`).join(' ')}</td>`;
-            return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td>${outBadge}</td><td style="color:var(--text-sec);font-weight:500;">${avgStr}</td><td style="font-weight:600;">${formatUSD(g.total_size)}</td><td>${modeBadge}</td>${actionHtml}</tr>`;
+            return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td style="color:var(--text-sec);font-weight:500;">${avgStr}</td><td style="font-weight:600;">${curStr}</td><td><div style="font-weight:600;">${formatUSD(g.total_size)}</div><div style="color:${pnlColor};font-size:11px;font-weight:600;">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div></td><td>${modeBadge}</td>${actionHtml}</tr>`;
         }).join('')}</tbody></table>`;
     }
 
@@ -686,13 +699,26 @@
             const lastB=Math.max(...b.trades.map(t=>new Date(t.closed_at||0).getTime()));
             return lastB-lastA;
         });
-        el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Outcome</th><th>Size</th><th>Closed</th></tr></thead><tbody>${entries.map(g=>{
+        el.innerHTML=`<table class="activity-table"><thead><tr><th>Market</th><th>Avg</th><th>Exit</th><th>Size / P&L</th><th>Closed</th></tr></thead><tbody>${entries.map(g=>{
             const link=polyLink(g.market_slug,g.event_slug);
             const iconHtml=g.icon?`<img src="${g.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
-            const outBadge=outcomeBadge(g.outcome,g.trades[0]?.side||'BUY');
+            // Avg entry price
+            let totalCost=0;
+            g.trades.forEach(t=>{totalCost+=parseFloat(t.our_size||0)*parseFloat(t.price||0);});
+            const avgEntry=g.total_size>0?(totalCost/g.total_size):0;
+            const avgStr=(avgEntry*100).toFixed(1)+'c';
+            // Exit price: use current_price from trades
+            const latestTrade=g.trades.reduce((a,b)=>new Date(b.closed_at||0)>new Date(a.closed_at||0)?b:a,g.trades[0]);
+            const exitPrice=parseFloat(latestTrade.current_price||0);
+            const exitStr=(exitPrice*100).toFixed(1)+'c';
+            // PnL
+            let pnl=0;
+            g.trades.forEach(t=>{pnl+=parseFloat(t.pnl||0);});
+            const pnlColor=pnl>=0?'var(--green)':'var(--red)';
+            const pnlSign=pnl>=0?'+':'';
             const lastClosed=g.trades.reduce((latest,t)=>{const d=new Date(t.closed_at||0);return d>latest?d:latest;},new Date(0));
             const closedStr=lastClosed.getTime()>0?lastClosed.toLocaleDateString('en-US',{month:'short',day:'numeric'}):'--';
-            return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td>${outBadge}</td><td style="font-weight:500;">${formatUSD(g.total_size)}</td><td style="color:var(--text-dim);font-size:11px;">${closedStr}</td></tr>`;
+            return `<tr><td>${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);font-weight:500;">${(g.market_title||'Unknown').slice(0,55)}</a></td><td style="color:var(--text-sec);font-weight:500;">${avgStr}</td><td style="font-weight:500;">${exitStr}</td><td><div style="font-weight:600;">${formatUSD(g.total_size)}</div><div style="color:${pnlColor};font-size:11px;font-weight:600;">${pnlSign}$${Math.abs(pnl).toFixed(2)}</div></td><td style="color:var(--text-dim);font-size:11px;">${closedStr}</td></tr>`;
         }).join('')}</tbody></table>`;
     }
 
