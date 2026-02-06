@@ -1581,7 +1581,7 @@ def debug_blocknative_test(wallet):
         result['error'] = 'BLOCKNATIVE_API_KEY not set'
         return jsonify(result)
 
-    from fetcher import resolve_proxy_wallet as rp, bn_watch_address, _bn_watched_addresses, _bn_stream
+    from fetcher import resolve_proxy_wallet as rp, bn_watch_address, _bn_watched_addresses, _bn_connected
     proxy = rp(wallet)
     result['proxy_wallet'] = proxy
 
@@ -1593,7 +1593,7 @@ def debug_blocknative_test(wallet):
         watched = bn_watch_address(addr)
         result['addresses_watched'].append({'address': addr, 'watching': watched})
 
-    result['stream_active'] = _bn_stream is not None
+    result['stream_active'] = _bn_connected
     result['total_watched'] = len(_bn_watched_addresses)
     return jsonify(result)
 

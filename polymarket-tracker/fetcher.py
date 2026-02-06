@@ -244,94 +244,185 @@ def get_market_by_token(token_id):
 
 
 # ---------------------------------------------------------------------------
-# Blocknative Mempool - real-time Polygon transaction monitoring
+# Blocknative Mempool - Direct WebSocket (no SDK dependency)
+# Connects to wss://api.blocknative.com/v0 using websocket-client.
+# This avoids the trio/parser dependency issues in blocknative-sdk.
 # ---------------------------------------------------------------------------
 
-# Blocknative stream instance (lazy-initialised)
-_bn_stream = None
-_bn_stream_lock = threading.Lock()
+BN_WS_URL = 'wss://api.blocknative.com/v0'
+BN_API_VERSION = '0.3.2'
+BN_BLOCKCHAIN = 'ethereum'
+
+# State
+_bn_ws = None
+_bn_ws_lock = threading.Lock()
+_bn_connected = False
 _bn_watched_addresses = set()
 
-# Incoming transaction queue from Blocknative websocket
+# Incoming transaction queue
 _bn_tx_queue = []
 _bn_tx_queue_lock = threading.Lock()
 
 
-def _get_bn_stream():
-    """Lazy-initialise the Blocknative SDK stream for Polygon."""
-    global _bn_stream
-    if _bn_stream is not None:
-        return _bn_stream
-    if not BLOCKNATIVE_API_KEY:
-        return None
-    with _bn_stream_lock:
-        if _bn_stream is not None:
-            return _bn_stream
-        try:
-            from blocknative.stream import Stream
-            _bn_stream = Stream(BLOCKNATIVE_API_KEY, network_id=POLYGON_NETWORK_ID)
-            print(f"  [Blocknative] Stream initialised for Polygon (network {POLYGON_NETWORK_ID})")
-            log_event('INFO', 'Blocknative stream initialised for Polygon')
-        except ImportError:
-            print("  [Blocknative] SDK not installed. Run: pip install blocknative-sdk")
-            log_event('WARN', 'blocknative-sdk not installed')
-        except Exception as e:
-            print(f"  [Blocknative] Stream init error: {e}")
-            log_event('WARN', f'Blocknative stream init error: {e}')
-    return _bn_stream
+def _bn_network_name(nid):
+    return {1: 'main', 5: 'goerli', 56: 'bsc-main', 137: 'matic-main', 250: 'fantom-main'}.get(nid, 'main')
 
 
-async def _bn_txn_handler(txn, unsubscribe):
-    """Handle incoming transactions from Blocknative stream."""
-    if not txn:
+def _bn_build_payload(category_code, event_code, data=None):
+    """Build a Blocknative WebSocket message payload."""
+    msg = {
+        'timeStamp': datetime.now().isoformat(),
+        'dappId': BLOCKNATIVE_API_KEY,
+        'version': BN_API_VERSION,
+        'blockchain': {
+            'system': BN_BLOCKCHAIN,
+            'network': _bn_network_name(POLYGON_NETWORK_ID),
+        },
+        'categoryCode': category_code,
+        'eventCode': event_code,
+    }
+    if data:
+        msg.update(data)
+    return msg
+
+
+def _bn_on_message(ws, message):
+    """Handle incoming WebSocket messages from Blocknative."""
+    global _bn_connected
+    try:
+        msg = json.loads(message)
+    except Exception:
         return
-    status = txn.get('status', '')
-    # Only process confirmed transactions (or pending for real-time alerts)
-    if status in ('confirmed', 'pending'):
+
+    status = msg.get('status', '')
+    if status != 'ok':
+        reason = msg.get('reason', '')
+        if reason:
+            print(f"  [Blocknative] Server error: {reason}")
+            log_event('WARN', f'Blocknative server: {reason}')
+        return
+
+    if 'event' not in msg:
+        return
+
+    event = msg['event']
+    event_code = event.get('eventCode', '')
+
+    # Skip echo/setup messages
+    if event_code in ('txRequest', 'nsfFail', 'txRepeat', 'txAwaitingApproval',
+                       'txConfirmReminder', 'txSendFail', 'txError', 'txUnderPriced', 'txSent',
+                       'checkDappId'):
+        return
+
+    if 'transaction' not in event:
+        return
+
+    txn = event['transaction']
+    txn_status = txn.get('status', '')
+
+    # Capture pending (for frontrunning) and confirmed (for tracking)
+    if txn_status in ('pending', 'confirmed', 'speedup'):
+        # Flatten the event data into the txn dict
+        txn['eventCode'] = event_code
+        if 'contractCall' in event:
+            txn['contractCall'] = event['contractCall']
         with _bn_tx_queue_lock:
             _bn_tx_queue.append(txn)
 
 
+def _bn_on_open(ws):
+    """On WebSocket connect, send init message then subscribe all watched addresses."""
+    global _bn_connected
+    _bn_connected = True
+    print(f"  [Blocknative] WebSocket connected to {_bn_network_name(POLYGON_NETWORK_ID)}")
+    log_event('INFO', 'Blocknative WebSocket connected')
+
+    # Send checkDappId init message
+    init_msg = _bn_build_payload('initialize', 'checkDappId')
+    ws.send(json.dumps(init_msg))
+
+    # Re-subscribe all watched addresses
+    for addr in list(_bn_watched_addresses):
+        _bn_send_watch(ws, addr)
+
+
+def _bn_on_close(ws, close_status_code, close_msg):
+    global _bn_connected
+    _bn_connected = False
+    print(f"  [Blocknative] WebSocket closed (code={close_status_code})")
+    log_event('WARN', f'Blocknative WS closed: {close_status_code}')
+
+
+def _bn_on_error(ws, error):
+    print(f"  [Blocknative] WebSocket error: {error}")
+    log_event('WARN', f'Blocknative WS error: {error}')
+
+
+def _bn_send_watch(ws, address):
+    """Send a config message to watch an address."""
+    config_msg = _bn_build_payload('configs', 'put', {
+        'config': {
+            'scope': address,
+            'watchAddress': True,
+        }
+    })
+    try:
+        ws.send(json.dumps(config_msg))
+    except Exception as e:
+        print(f"  [Blocknative] Send watch error: {e}")
+
+
 def bn_watch_address(address):
     """Subscribe to a wallet address on Blocknative."""
+    global _bn_ws
     addr = address.lower()
     if addr in _bn_watched_addresses:
         return True
-    stream = _get_bn_stream()
-    if not stream:
-        return False
-    try:
-        filters = [{'status': 'confirmed'}]
-        stream.subscribe_address(addr, _bn_txn_handler, filter=filters)
-        _bn_watched_addresses.add(addr)
+    _bn_watched_addresses.add(addr)
+    # If already connected, send the watch message immediately
+    if _bn_ws and _bn_connected:
+        _bn_send_watch(_bn_ws, addr)
         print(f"  [Blocknative] Watching {addr[:10]}...")
         log_event('INFO', f'Blocknative watching {addr[:10]}...')
-        return True
-    except Exception as e:
-        print(f"  [Blocknative] Watch error for {addr[:10]}...: {e}")
-        return False
+    return True
 
 
 def bn_start_stream():
-    """Start the Blocknative websocket stream in a background thread."""
-    stream = _get_bn_stream()
-    if not stream:
+    """Start the Blocknative WebSocket in a background thread with auto-reconnect."""
+    global _bn_ws
+    if not BLOCKNATIVE_API_KEY:
+        print("  [Blocknative] No API key - skipping mempool stream")
         return False
+
     try:
-        def _run_stream():
-            try:
-                stream.connect()
-            except Exception as e:
-                print(f"  [Blocknative] Stream error: {e}")
-                log_event('WARN', f'Blocknative stream error: {e}')
-        t = threading.Thread(target=_run_stream, daemon=True)
-        t.start()
-        print("  [Blocknative] Websocket stream started")
-        log_event('INFO', 'Blocknative websocket stream started')
-        return True
-    except Exception as e:
-        print(f"  [Blocknative] Start error: {e}")
+        import websocket
+    except ImportError:
+        print("  [Blocknative] websocket-client not installed. Run: pip install websocket-client")
+        log_event('WARN', 'websocket-client not installed')
         return False
+
+    def _run_forever():
+        global _bn_ws
+        while True:
+            try:
+                _bn_ws = websocket.WebSocketApp(
+                    BN_WS_URL,
+                    on_open=_bn_on_open,
+                    on_message=_bn_on_message,
+                    on_close=_bn_on_close,
+                    on_error=_bn_on_error,
+                )
+                _bn_ws.run_forever(ping_interval=15, ping_timeout=10)
+            except Exception as e:
+                print(f"  [Blocknative] Stream crash: {e}, reconnecting in 5s...")
+                log_event('WARN', f'Blocknative stream crash: {e}')
+            time.sleep(5)  # Wait before reconnect
+
+    t = threading.Thread(target=_run_forever, daemon=True)
+    t.start()
+    print("  [Blocknative] WebSocket stream starting...")
+    log_event('INFO', 'Blocknative WebSocket stream starting')
+    return True
 
 
 def bn_drain_queue():
