@@ -213,7 +213,7 @@
         <div class="panel-center">
             <!-- Dashboard -->
             <div class="page active" id="page-copy">
-                <div class="info-banner warn" id="no-wallet-banner" style="display:none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><p>No wallet configured. Use the setup form in the Wallet card below, or enable Mock Mode to test.</p></div>
+                <div class="info-banner warn" id="no-wallet-banner" style="display:none;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><p>No wallet configured. Run <code>python setup_config.py</code> then restart <code>python app.py</code>.</p></div>
 
                 <!-- PnL Summary Cards -->
                 <div class="pnl-summary" id="pnl-summary">
@@ -222,7 +222,7 @@
                     <div class="pnl-card"><div class="val" style="color:var(--yellow);" id="pnl-open">0</div><div class="lbl">Open</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-total">$0.00</div><div class="lbl">Total PnL</div></div>
                     <div class="pnl-card"><div class="val" id="pnl-winrate">0%</div><div class="lbl">Win Rate</div></div>
-                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-max-events">--</div><div class="lbl">Max Events</div></div>
+                    <div class="pnl-card"><div class="val" style="color:var(--text-dim);" id="pnl-max-trades">0</div><div class="lbl">Max Trades</div></div>
                 </div>
 
                 <div class="grid-2">
@@ -245,8 +245,8 @@
                         <div class="status-row" id="copy-pct-row"><span class="label">Copy %</span><span class="value"><input class="config-input" id="copy-pct-input" type="number" min="1" max="100" value="10" onchange="updateCopyPct()"><span style="color:var(--text-dim);font-size:11px;">%</span></span></div>
                         <div class="status-row" id="fixed-size-row" style="display:none;"><span class="label">Fixed Amount</span><span class="value">$<input class="config-input" id="fixed-size-input" type="number" min="0.1" step="0.1" value="10" onchange="updateFixedSize()"></span></div>
                         <div class="status-row"><span class="label">Max Trade $</span><span class="value">$<input class="config-input" id="copy-max-input" type="number" min="1" value="100" onchange="updateMaxTrade()"></span></div>
-                        <div class="status-row"><span class="label">Max Events</span><span class="value"><input class="config-input" id="max-events-input" type="number" min="0" value="0" onchange="updateMaxEvents()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
-                        <div class="status-row"><span class="label">Max Trades/Event</span><span class="value"><input class="config-input" id="max-per-event-input" type="number" min="0" value="0" onchange="updateMaxPerEvent()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
+                        <div class="status-row"><span class="label">Max Trades</span><span class="value"><input class="config-input" id="max-trades-input" type="number" min="0" value="0" onchange="updateMaxTrades()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
+                        <div class="status-row"><span class="label">Max / Event</span><span class="value"><input class="config-input" id="max-per-event-input" type="number" min="0" value="0" onchange="updateMaxPerEvent()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
                         <div class="status-row"><span class="label">Prob Sizing</span><span class="value"><div class="toggle" id="prob-toggle" onclick="toggleProbSizing()" style="width:36px;height:20px;"></div></span></div>
@@ -292,14 +292,11 @@
                 <div class="card" style="margin-top:16px;">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
                         <h3 style="margin-bottom:0;">Copy Trade History</h3>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <button class="btn btn-sm btn-outline" style="font-size:10px;color:var(--cyan);border-color:rgba(6,182,212,0.3);white-space:nowrap;" onclick="checkResolutions()" id="check-res-btn">Check Resolutions</button>
-                            <div class="filter-buttons">
-                                <button class="filter-btn active" data-ctf="all" onclick="filterCopyTrades('all')">All</button>
-                                <button class="filter-btn" data-ctf="OPEN" onclick="filterCopyTrades('OPEN')">Open</button>
-                                <button class="filter-btn" data-ctf="WIN" onclick="filterCopyTrades('WIN')">Wins</button>
-                                <button class="filter-btn" data-ctf="LOSS" onclick="filterCopyTrades('LOSS')">Losses</button>
-                            </div>
+                        <div class="filter-buttons">
+                            <button class="filter-btn active" data-ctf="all" onclick="filterCopyTrades('all')">All</button>
+                            <button class="filter-btn" data-ctf="OPEN" onclick="filterCopyTrades('OPEN')">Open</button>
+                            <button class="filter-btn" data-ctf="WIN" onclick="filterCopyTrades('WIN')">Wins</button>
+                            <button class="filter-btn" data-ctf="LOSS" onclick="filterCopyTrades('LOSS')">Losses</button>
                         </div>
                     </div>
                     <div id="copy-trades-content"><div class="empty-state"><p>No copy trades yet</p></div></div>
@@ -432,17 +429,17 @@
         const v=parseFloat(document.getElementById('copy-max-input').value)||100;
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trade_size:v})});showToast('Max trade updated','success');}catch(e){}
     }
+    async function updateMaxTrades() {
+        const v=parseInt(document.getElementById('max-trades-input').value)||0;
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trades:v})});config.max_trades=v;showToast(v>0?'Max trades: '+v:'Max trades: unlimited','success');}catch(e){}
+    }
     async function updateFixedSize() {
         const v=parseFloat(document.getElementById('fixed-size-input').value)||10;
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fixed_trade_size:v})});showToast('Fixed size: $'+v,'success');}catch(e){}
     }
-    async function updateMaxEvents() {
-        const v=parseInt(document.getElementById('max-events-input').value)||0;
-        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_events:v})});config.max_events=v;showToast(v>0?'Max events: '+v:'Max events: unlimited','success');}catch(e){}
-    }
     async function updateMaxPerEvent() {
         const v=parseInt(document.getElementById('max-per-event-input').value)||0;
-        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trades_per_event:v})});config.max_trades_per_event=v;showToast(v>0?'Max trades/event: '+v:'Max trades/event: unlimited','success');}catch(e){}
+        try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_trades_per_event:v})});config.max_trades_per_event=v;showToast(v>0?'Max per event: '+v:'Max per event: unlimited','success');}catch(e){}
     }
 
     function updateStatus() {
@@ -460,7 +457,7 @@
         try{const r=await fetch('/api/config'); config=await r.json();
         document.getElementById('copy-pct-input').value=config.copy_percentage||10;
         document.getElementById('copy-max-input').value=config.max_trade_size||100;
-        document.getElementById('max-events-input').value=config.max_events||0;
+        document.getElementById('max-trades-input').value=config.max_trades||0;
         document.getElementById('max-per-event-input').value=config.max_trades_per_event||0;
         document.getElementById('fixed-size-input').value=config.fixed_trade_size||10;
         document.getElementById('engine-copied').textContent=(config.trades_copied||0).toLocaleString();
@@ -477,99 +474,14 @@
             banner.style.display='none';
             const bal=config.usdc_balance!==null&&config.usdc_balance!==undefined?'$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'Loading...';
             if(config.usdc_balance!==null&&config.usdc_balance!==undefined){document.getElementById('header-balance-amount').textContent='$'+config.usdc_balance.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});document.getElementById('header-balance').style.display='flex';}
-            const pk=config.private_key||'';
-            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;word-break:break-all;">${config.funder_address||'--'}</span></div><div class="status-row"><span class="label">Private Key</span><span class="value" style="font-family:monospace;font-size:11px;display:flex;align-items:center;gap:6px;word-break:break-all;flex-wrap:wrap;"><span id="pk-display" style="max-width:100%;word-break:break-all;">${pk||'Not set'}</span><span style="display:flex;gap:4px;flex-shrink:0;"><button onclick="togglePkVisibility()" style="background:none;border:1px solid rgba(255,255,255,0.15);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;" id="pk-toggle-btn">Hide</button><button onclick="copyPk()" style="background:none;border:1px solid rgba(255,255,255,0.15);color:var(--text-dim);padding:2px 8px;border-radius:4px;cursor:pointer;font-size:10px;">Copy</button></span></span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>`;
+            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot on"></span>Connected</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="font-family:monospace;font-size:12px;">${truncAddr(config.funder_address)}</span></div><div class="status-row"><span class="label">USDC Balance</span><span class="value" style="color:var(--green);">${bal}</span></div><div class="status-row"><span class="label">CLOB Client</span><span class="value">${config.clob_available?'<span class="dot on"></span>Available':'<span class="dot off"></span>Not installed'}</span></div><div class="status-row"><span class="label">Signature</span><span class="value" style="color:var(--text-dim);">Type ${config.signature_type||1}</span></div>`;
         } else if(config.mock_mode) {
             banner.style.display='none';document.getElementById('header-balance').style.display='none';
             el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value" style="color:var(--orange);"><span class="dot warn"></span>Mock Mode</span></div><div class="status-row"><span class="label">Wallet</span><span class="value" style="color:var(--text-dim);">Not required</span></div><div class="status-row"><span class="label">Balance</span><span class="value" style="color:var(--text-dim);">Simulated</span></div>`;
         } else {
             banner.style.display='flex';document.getElementById('header-balance').style.display='none';
-            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div>
-            <div style="margin-top:12px;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:14px;background:rgba(255,255,255,0.02);">
-                <div style="font-size:13px;font-weight:600;margin-bottom:10px;color:var(--text);">Wallet Setup</div>
-                <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px;">Get your private key from <a href="https://reveal.polymarket.com" target="_blank" style="color:var(--accent);">reveal.polymarket.com</a></div>
-                <div style="margin-bottom:8px;">
-                    <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">Private Key</label>
-                    <input type="text" id="setup-pk" placeholder="0x..." style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;color:var(--text);font-family:monospace;font-size:12px;outline:none;" autocomplete="off">
-                </div>
-                <div style="margin-bottom:8px;">
-                    <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">Funder / Proxy Address</label>
-                    <input type="text" id="setup-funder" placeholder="0x..." style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;color:var(--text);font-family:monospace;font-size:12px;outline:none;" autocomplete="off">
-                </div>
-                <div style="margin-bottom:12px;">
-                    <label style="display:block;font-size:11px;color:var(--text-dim);margin-bottom:3px;">Signature Type</label>
-                    <select id="setup-sigtype" style="width:100%;background:rgba(0,0,0,0.3);border:1px solid rgba(255,255,255,0.1);border-radius:6px;padding:8px 10px;color:var(--text);font-size:12px;outline:none;">
-                        <option value="1">1 - Email / Magic Wallet</option>
-                        <option value="2">2 - Browser Wallet (MetaMask)</option>
-                    </select>
-                </div>
-                <button onclick="submitSetup()" style="width:100%;padding:10px;background:var(--accent);color:#fff;border:none;border-radius:6px;font-weight:600;font-size:13px;cursor:pointer;">Connect Wallet</button>
-                <div style="text-align:center;margin-top:8px;font-size:11px;color:var(--text-dim);">Or enable <strong style="color:var(--orange);cursor:pointer;" onclick="toggleMock()">Mock Mode</strong> to test without a wallet</div>
-            </div>`;
+            el.innerHTML=`<div class="status-row"><span class="label">Status</span><span class="value"><span class="dot off"></span>Not Connected</span></div><div style="margin-top:12px;"><div class="info-banner info" style="margin-bottom:0;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg><p>Run <code>python setup_config.py</code> to configure, or enable Mock Mode to test.</p></div></div>`;
         }
-    }
-
-    // ---- Market Resolution Checker ----
-    async function checkResolutions() {
-        const btn=document.getElementById('check-res-btn');
-        if(btn){btn.disabled=true;btn.textContent='Checking...';}
-        try{
-            const r=await fetch('/api/check-resolutions',{method:'POST'});
-            const d=await r.json();
-            if(d.success){
-                if(d.closed>0){
-                    showToast(`Closed ${d.closed} resolved position(s)`,'success');
-                    fetchCopyTrades();
-                } else {
-                    showToast('No resolved markets found','info');
-                }
-            }
-        }catch(e){showToast('Resolution check failed','error');}
-        finally{if(btn){btn.disabled=false;btn.textContent='Check Resolutions';}}
-    }
-
-    // ---- Wallet Setup from Dashboard ----
-    async function submitSetup() {
-        const pk = (document.getElementById('setup-pk')?.value||'').trim();
-        const funder = (document.getElementById('setup-funder')?.value||'').trim().toLowerCase();
-        const sigType = parseInt(document.getElementById('setup-sigtype')?.value||'1');
-        if(!pk){showToast('Private key is required','error');return;}
-        if(!funder||!funder.startsWith('0x')||funder.length!==42){showToast('Invalid funder address (0x + 40 hex chars)','error');return;}
-        try {
-            const r = await fetch('/api/config/credentials', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({private_key: pk, funder_address: funder, signature_type: sigType})
-            });
-            const res = await r.json();
-            if(r.ok && res.success) {
-                showToast('Wallet connected successfully!', 'success');
-                setTimeout(loadConfig, 500);
-            } else {
-                showToast(res.error || 'Failed to save credentials', 'error');
-            }
-        } catch(e) {
-            showToast('Connection error', 'error');
-        }
-    }
-
-    // ---- Private Key Show/Hide ----
-    let pkVisible=true;
-    function togglePkVisibility() {
-        pkVisible=!pkVisible;
-        const pk=config.private_key||'';
-        const el=document.getElementById('pk-display');
-        const btn=document.getElementById('pk-toggle-btn');
-        if(!el||!btn)return;
-        if(pkVisible){el.textContent=pk||'Not set';btn.textContent='Hide';}
-        else{el.textContent=pk?pk.slice(0,6)+'...'+pk.slice(-4):'Not set';btn.textContent='Show';}
-    }
-    function copyPk() {
-        const pk=config.private_key||'';
-        if(!pk){showToast('No private key set','error');return;}
-        navigator.clipboard.writeText(pk).then(()=>showToast('Private key copied','success')).catch(()=>{
-            const ta=document.createElement('textarea');ta.value=pk;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);showToast('Private key copied','success');
-        });
     }
 
     // ---- Stats & Trades ----
@@ -614,7 +526,7 @@
         // Track which events we've rendered to show "+" badge
         const eventSeen={};
 
-        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Ends In</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
+        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Size</th><th>Entry</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
             const link=polyLink(t.market_slug,t.event_slug);
             const resultCls=t.result==='WIN'?'result-win':t.result==='LOSS'?'result-loss':'result-open';
             const pnlCls=t.pnl>0?'pnl-positive':t.pnl<0?'pnl-negative':'';
@@ -629,16 +541,6 @@
             const statusHtml=isClosed
                 ?'<span style="color:var(--text-dim);font-size:11px;font-weight:500;">Closed</span>'
                 :'<span style="color:var(--green);font-size:11px;font-weight:600;">Active</span>';
-
-            // Countdown timer for event end
-            let timerHtml='<span style="color:var(--text-dim);font-size:11px;">--</span>';
-            if(t.end_date){
-                if(isClosed){
-                    timerHtml='<span style="color:var(--text-dim);font-size:11px;">Ended</span>';
-                } else {
-                    timerHtml=`<span class="event-timer" data-end="${t.end_date}" style="font-size:11px;font-weight:600;font-family:monospace;white-space:nowrap;"></span>`;
-                }
-            }
 
             // Action column - hidden in mock mode
             let actionTd='';
@@ -658,41 +560,9 @@
                 }
             }
 
-            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:250px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}${t.outcome?'<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">'+t.outcome+' '+tierBadge+'</div>':' '+tierBadge}</td><td><span class="side-${(t.side||'').toLowerCase()}">${sideStr}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${timerHtml}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
+            return `<tr><td style="font-size:11px;color:var(--text-dim);white-space:nowrap;">${t.executed_at?new Date(t.executed_at).toLocaleString():'--'}</td><td style="min-width:250px;">${iconHtml}<a href="${link}" target="_blank" style="color:var(--text);">${t.market_title||'--'}</a>${countBadge}${t.outcome?'<div style="font-size:10px;color:var(--text-dim);margin-top:2px;">'+t.outcome+' '+tierBadge+'</div>':' '+tierBadge}</td><td><span class="side-${(t.side||'').toLowerCase()}">${sideStr}</span></td><td style="font-weight:600;">${formatUSD(t.our_size)}</td><td style="color:var(--text-dim);">${t.price?(parseFloat(t.price)*100).toFixed(1)+'c':'-'}</td><td>${statusHtml}</td><td><span class="${resultCls}">${t.result||'OPEN'}</span></td><td><span class="${pnlCls}" style="font-weight:600;">${pnlStr}</span></td><td style="font-size:11px;color:${t.mock?'var(--orange)':'var(--green)'};">${t.mock?'MOCK':'LIVE'}</td>${actionTd}</tr>`;
         }).join('')}</tbody></table>`;
-        updateEventTimers();
     }
-    // ---- Event Countdown Timers ----
-    function updateEventTimers(){
-        document.querySelectorAll('.event-timer').forEach(el=>{
-            const end=el.dataset.end;
-            if(!end)return;
-            const endMs=new Date(end).getTime();
-            const now=Date.now();
-            const diff=endMs-now;
-            if(diff<=0){
-                el.textContent='Ended';
-                el.style.color='var(--red)';
-                return;
-            }
-            const d=Math.floor(diff/86400000);
-            const h=Math.floor((diff%86400000)/3600000);
-            const m=Math.floor((diff%3600000)/60000);
-            const s=Math.floor((diff%60000)/1000);
-            let str='';
-            if(d>0)str=d+'d '+h+'h '+m+'m';
-            else if(h>0)str=h+'h '+m+'m '+s+'s';
-            else str=m+'m '+s+'s';
-            // Color based on urgency
-            if(diff<300000)el.style.color='var(--red)';        // <5min red
-            else if(diff<900000)el.style.color='var(--orange)'; // <15min orange
-            else if(diff<3600000)el.style.color='var(--yellow)'; // <1hr yellow
-            else el.style.color='var(--cyan)';
-            el.textContent=str;
-        });
-    }
-    setInterval(updateEventTimers, 1000);
-
     async function closeTrade(id, isWin) {
         const price = isWin ? 1 : 0;
         try{const r=await fetch('/api/copy-trades/'+id+'/close',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({result:isWin?'WIN':'LOSS',current_price:price})}); const res=await r.json(); if(r.ok){showToast(`Trade closed as ${isWin?'WIN':'LOSS'}: $${res.pnl?.toFixed(2)||'0'} PnL`,isWin?'success':'error');fetchCopyTrades();}else showToast(res.error||'Error','error');}catch(e){showToast('Error closing trade','error');}
@@ -707,7 +577,7 @@
         document.getElementById('pnl-total').style.color=tp>=0?'var(--green)':'var(--red)';
         document.getElementById('pnl-winrate').textContent=(s.win_rate||0)+'%';
         document.getElementById('pnl-winrate').style.color=wrColor(s.win_rate||0);
-        const me=config.max_events||0; document.getElementById('pnl-max-events').textContent=me>0?me:'--';
+        const mt=config.max_trades||0; document.getElementById('pnl-max-trades').textContent=mt>0?mt:'--';
         }catch(e){}
     }
 

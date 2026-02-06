@@ -267,7 +267,6 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             trader_id INTEGER NOT NULL,
             transaction_hash TEXT UNIQUE,
-            trade_type TEXT DEFAULT 'TRADE',
             side TEXT, size REAL, price REAL, usdc_size REAL,
             timestamp INTEGER, title TEXT, slug TEXT, icon TEXT,
             event_slug TEXT, outcome TEXT, outcome_index INTEGER,
@@ -276,18 +275,6 @@ def init_db():
             FOREIGN KEY (trader_id) REFERENCES traders(id)
         )
     ''')
-
-    # Add trade_type column if missing (migration for existing DBs)
-    try:
-        cursor.execute("ALTER TABLE trades ADD COLUMN trade_type TEXT DEFAULT 'TRADE'")
-    except Exception:
-        pass  # Column already exists
-
-    # Add end_date column to copy_trades if missing
-    try:
-        cursor.execute("ALTER TABLE copy_trades ADD COLUMN end_date TEXT")
-    except Exception:
-        pass  # Column already exists
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS copy_trades (
@@ -309,7 +296,6 @@ def init_db():
             pnl_pct REAL DEFAULT 0,
             closed INTEGER DEFAULT 0,
             closed_at TEXT,
-            end_date TEXT,
             result TEXT DEFAULT 'OPEN',
             status TEXT,
             mock INTEGER DEFAULT 0,
@@ -564,255 +550,6 @@ def execute_live_trade(client, trade, config):
         return False, str(e), 0
 
 
-# ============================================
-#  MARKET RESOLUTION CHECKER
-#  Checks if markets with OPEN copy trades have resolved.
-#  Uses Polymarket Gamma API to get market resolution status.
-# ============================================
-
-GAMMA_MARKETS_API = 'https://gamma-api.polymarket.com/markets'
-
-# Cache for market end dates to avoid repeated API calls
-_market_end_date_cache = {}
-
-def get_market_end_date(condition_id):
-    """Fetch the end date for a market from the Gamma API. Returns ISO string or None."""
-    if not condition_id:
-        return None
-    if condition_id in _market_end_date_cache:
-        return _market_end_date_cache[condition_id]
-    try:
-        resp = req.get(GAMMA_MARKETS_API, params={'condition_ids': condition_id, 'limit': 1}, timeout=8)
-        if resp.status_code == 200:
-            markets = resp.json()
-            if markets and isinstance(markets, list) and len(markets) > 0:
-                market = markets[0]
-                # Prefer endDateIso, fallback to endDate
-                end_date = market.get('endDateIso') or market.get('endDate') or None
-                _market_end_date_cache[condition_id] = end_date
-                return end_date
-    except Exception as e:
-        log_event('ENGINE', 'WARN', f'Failed to fetch end date for {condition_id[:24]}', str(e))
-    _market_end_date_cache[condition_id] = None
-    return None
-
-
-def check_resolved_markets():
-    """
-    Check all OPEN copy trades and see if their markets have resolved.
-    Uses Gamma API (condition_ids param) to get market resolution status.
-    On Polymarket, when a market resolves:
-      - 'closed' becomes true
-      - 'outcomePrices' shows final prices e.g. "[1, 0]" meaning first outcome won
-      - 'outcomes' shows the labels e.g. '["Up", "Down"]'
-    PnL: on Polymarket price is 0-1 probability, our_size is USD spent.
-      shares_bought = our_size / entry_price
-      pnl = shares_bought * (exit_price - entry_price) = our_size * (exit_price / entry_price - 1)
-    """
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, condition_id, outcome, side, price, our_size, market_title, mock
-            FROM copy_trades
-            WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''
-        ''')
-        open_trades = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-
-        if not open_trades:
-            return 0
-
-        # Group by condition_id to batch API calls
-        unique_cids = list(set(t['condition_id'] for t in open_trades))
-        closed_count = 0
-
-        log_event('ENGINE', 'INFO', f'Resolution checker: checking {len(unique_cids)} market(s) with {len(open_trades)} open position(s)')
-
-        for cid in unique_cids:
-            try:
-                # Gamma API uses 'condition_ids' (plural) as the query param
-                resp = req.get(GAMMA_MARKETS_API, params={'condition_ids': cid, 'limit': 1}, timeout=10)
-                if resp.status_code != 200:
-                    log_event('ENGINE', 'WARN', f'Gamma API returned {resp.status_code} for {cid[:24]}')
-                    continue
-
-                markets = resp.json()
-                if not markets:
-                    # Also try the slug-based lookup as fallback
-                    log_event('ENGINE', 'WARN', f'No market found for condition_id {cid[:24]}')
-                    continue
-
-                market = markets[0] if isinstance(markets, list) else markets
-
-                # Check if market has resolved
-                # 'closed' = true means market is settled
-                is_closed = market.get('closed', False)
-                if not is_closed:
-                    continue
-
-                # Market is closed -- determine winning outcome
-                # 'outcomePrices' is a JSON string like "[1, 0]" or "[0, 1]"
-                # 'outcomes' is a JSON string like '["Up", "Down"]' or '["Yes", "No"]'
-                outcome_prices_str = market.get('outcomePrices', '')
-                outcomes_str = market.get('outcomes', '')
-
-                # Parse both
-                resolution_prices = {}
-                try:
-                    if outcome_prices_str and outcomes_str:
-                        prices = json.loads(outcome_prices_str) if isinstance(outcome_prices_str, str) else outcome_prices_str
-                        outcomes_parsed = json.loads(outcomes_str) if isinstance(outcomes_str, str) else (outcomes_str or [])
-
-                        for i, price in enumerate(prices):
-                            if i < len(outcomes_parsed):
-                                # Store both original case and lowercase for matching
-                                outcome_name = outcomes_parsed[i]
-                                resolution_prices[outcome_name.lower()] = float(price)
-                                resolution_prices[outcome_name] = float(price)
-
-                        log_event('ENGINE', 'INFO', f'Market resolved: {market.get("question", cid[:24])} | outcomes={outcomes_parsed} prices={prices}')
-                except (json.JSONDecodeError, ValueError, TypeError) as e:
-                    log_event('ENGINE', 'WARN', f'Failed to parse resolution for {cid[:24]}: {e}')
-                    continue
-
-                if not resolution_prices:
-                    log_event('ENGINE', 'WARN', f'No resolution prices for {cid[:24]}: outcomePrices={outcome_prices_str}')
-                    continue
-
-                # Close all OPEN trades for this condition_id
-                trades_for_cid = [t for t in open_trades if t['condition_id'] == cid]
-                conn = get_db()
-                cursor = conn.cursor()
-
-                for trade in trades_for_cid:
-                    entry_price = float(trade.get('price') or 0)
-                    our_size = float(trade.get('our_size') or 0)
-                    trade_outcome = (trade.get('outcome') or '').strip()
-                    side = (trade.get('side') or '').upper()
-
-                    if entry_price <= 0 or our_size <= 0:
-                        continue
-
-                    # Look up the resolution price for our outcome
-                    # Try exact match first, then lowercase
-                    exit_price = resolution_prices.get(trade_outcome)
-                    if exit_price is None:
-                        exit_price = resolution_prices.get(trade_outcome.lower())
-                    if exit_price is None:
-                        # Fallback: if only 2 outcomes and we can't match, check which one resolved to 1
-                        winning = [k for k, v in resolution_prices.items() if v >= 0.99]
-                        losing = [k for k, v in resolution_prices.items() if v <= 0.01]
-                        if trade_outcome.lower() in [w.lower() for w in winning]:
-                            exit_price = 1.0
-                        elif trade_outcome.lower() in [l.lower() for l in losing]:
-                            exit_price = 0.0
-                        else:
-                            log_event('ENGINE', 'WARN',
-                                      f'Cannot match outcome "{trade_outcome}" to resolution prices',
-                                      f'Available: {list(resolution_prices.keys())}')
-                            continue
-
-                    # Calculate PnL correctly for Polymarket:
-                    # You buy shares at entry_price, each share pays exit_price on resolution
-                    # shares = our_size / entry_price (how many shares we got for our USD)
-                    # value_at_resolution = shares * exit_price
-                    # pnl = value_at_resolution - our_size
-                    if side == 'BUY':
-                        shares = our_size / entry_price
-                        value_at_exit = shares * exit_price
-                        pnl = value_at_exit - our_size
-                    else:
-                        # SELL: we sold shares at entry_price, they resolved at exit_price
-                        # profit = entry_price - exit_price per share
-                        shares = our_size / entry_price
-                        pnl = our_size - (shares * exit_price)
-
-                    pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
-                    actual_result = 'WIN' if pnl >= 0 else 'LOSS'
-
-                    cursor.execute('''
-                        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
-                        WHERE id = ?
-                    ''', (datetime.now().isoformat(), actual_result, exit_price, round(pnl, 4), round(pnl_pct, 2), trade['id']))
-
-                    mode_str = 'MOCK' if trade.get('mock') else 'LIVE'
-                    log_event('ENGINE', actual_result,
-                              f'[{mode_str}] Market resolved: {trade.get("market_title", "")[:50]}',
-                              f'Outcome "{trade_outcome}" => {exit_price:.2f} | Entry: {entry_price:.4f} | Shares: {shares:.2f} | PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
-                    closed_count += 1
-
-                conn.commit()
-                conn.close()
-
-                # Small delay between API calls to avoid rate limiting
-                time.sleep(0.5)
-
-            except Exception as e:
-                log_event('ENGINE', 'WARN', f'Resolution check failed for {cid[:24]}', str(e))
-                continue
-
-        if closed_count > 0:
-            log_event('ENGINE', 'INFO', f'Auto-closed {closed_count} position(s) from resolved markets')
-
-        return closed_count
-
-    except Exception as e:
-        log_event('ENGINE', 'ERROR', 'Resolution checker error', str(e))
-        return 0
-
-
-def backfill_end_dates():
-    """Fetch end_date for OPEN copy trades that are missing it."""
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT id, condition_id FROM copy_trades
-            WHERE result = 'OPEN' AND status = 'SUCCESS'
-            AND (end_date IS NULL OR end_date = '')
-            AND condition_id IS NOT NULL AND condition_id != ''
-        ''')
-        rows = [dict(r) for r in cursor.fetchall()]
-        conn.close()
-        if not rows:
-            return
-
-        updated = 0
-        seen_cids = {}
-        for row in rows:
-            cid = row['condition_id']
-            if cid in seen_cids:
-                ed = seen_cids[cid]
-            else:
-                ed = get_market_end_date(cid)
-                seen_cids[cid] = ed
-                time.sleep(0.3)
-            if ed:
-                conn = get_db()
-                conn.execute('UPDATE copy_trades SET end_date = ? WHERE id = ?', (ed, row['id']))
-                conn.commit()
-                conn.close()
-                updated += 1
-        if updated > 0:
-            log_event('ENGINE', 'INFO', f'Backfilled end_date for {updated} open trade(s)')
-    except Exception as e:
-        log_event('ENGINE', 'WARN', 'End date backfill error', str(e))
-
-
-def resolution_checker_loop():
-    """Background thread that periodically checks for resolved markets"""
-    log_event('ENGINE', 'INFO', 'Market resolution checker started (every 30s)')
-    # Backfill end_dates for existing trades on first run
-    backfill_end_dates()
-    while copy_engine.get('running', False):
-        try:
-            check_resolved_markets()
-        except Exception as e:
-            log_event('ENGINE', 'ERROR', 'Resolution loop error', str(e))
-        time.sleep(30)  # Check every 30 seconds
-
-
 def copy_trading_loop():
     """Main copy trading loop with tiered execution and strategy-based sizing"""
     global copy_engine
@@ -865,6 +602,9 @@ def copy_trading_loop():
 
             new_trades = [dict(row) for row in cursor.fetchall()]
 
+            # Count total successful copy trades this session for max_trades limit
+            cursor.execute("SELECT COUNT(*) as c FROM copy_trades WHERE status='SUCCESS'")
+            total_copied = cursor.fetchone()['c']
             conn.close()
 
             copy_engine['last_check'] = datetime.now().isoformat()
@@ -875,6 +615,17 @@ def copy_trading_loop():
 
             mode_label = 'MOCK' if mock_mode else 'LIVE'
             log_event('ENGINE', 'INFO', f'Found {len(new_trades)} trade(s) to copy [{mode_label}]')
+
+            # Check max trades limit
+            max_trades = config.get('max_trades', 0)
+            if max_trades > 0 and total_copied >= max_trades:
+                log_event('ENGINE', 'SKIP', f'Max trades limit reached ({total_copied}/{max_trades})')
+                # Still advance timestamp so we don't re-check the same trades
+                ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                config[ts_key] = new_trades[-1]['timestamp']
+                save_config(config)
+                time.sleep(10)
+                continue
 
             # For live mode, check balance and init CLOB
             client = None
@@ -891,56 +642,41 @@ def copy_trading_loop():
                     continue
 
             for trade in new_trades:
+                # Re-check max trades inside loop
+                if max_trades > 0 and copy_engine['trades_copied'] + total_copied >= max_trades:
+                    log_event('ENGINE', 'SKIP', f'Max trades limit reached')
+                    break
+
                 min_size = config.get('min_trade_size', 10)
                 trade_size = float(trade.get('usdc_size') or 0)
                 side_str = (trade.get('side') or '').upper()
                 token_id = trade.get('asset') or trade.get('condition_id') or ''
-                trade_type = (trade.get('trade_type') or 'TRADE').upper()
 
-                # Detect if this is a close signal (SELL, REDEEM, MERGE)
-                # Close signals should bypass min size and max events checks
-                is_close_signal = (
-                    side_str in ('SELL', 'REDEEM', 'MERGE') or
-                    trade_type in ('REDEEM', 'MERGE')
-                )
-
-                if not is_close_signal:
-                    # Check max events limit (only for new open trades)
-                    max_events = config.get('max_events', 0)
-                    max_per_event = config.get('max_trades_per_event', 0)
-                    if (max_events > 0 or max_per_event > 0) and trade.get('condition_id'):
-                        conn2 = get_db()
-                        c2 = conn2.cursor()
-                        c2.execute("SELECT COUNT(DISTINCT condition_id) as c FROM copy_trades WHERE result = 'OPEN' AND status = 'SUCCESS' AND condition_id IS NOT NULL AND condition_id != ''")
-                        total_events = c2.fetchone()['c']
-                        c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
-                                   (trade['condition_id'],))
-                        already_in = c2.fetchone()['c']
-                        conn2.close()
-                        # Skip if this is a new event and we're at the max events limit
-                        if max_events > 0 and already_in == 0 and total_events >= max_events:
-                            log_event('ENGINE', 'SKIP', f'Max events limit reached ({total_events}/{max_events})',
-                                      f'{trade.get("title", "")[:50]}')
-                            ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                            config[ts_key] = trade['timestamp']
-                            save_config(config)
-                            continue
-                        # Skip if this event already has max trades per event
-                        if max_per_event > 0 and already_in >= max_per_event:
-                            log_event('ENGINE', 'SKIP', f'Max trades per event reached ({already_in}/{max_per_event})',
-                                      f'{trade.get("title", "")[:50]}')
-                            ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                            config[ts_key] = trade['timestamp']
-                            save_config(config)
-                            continue
-
-                    # Min size check (only for BUY trades, not close signals)
-                    effective_min = 0.01 if mock_mode else min_size
-                    if trade_size < effective_min:
+                # Check max trades per event limit
+                max_per_event = config.get('max_trades_per_event', 0)
+                if max_per_event > 0 and trade.get('condition_id'):
+                    conn2 = get_db()
+                    c2 = conn2.cursor()
+                    c2.execute("SELECT COUNT(*) as c FROM copy_trades WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'",
+                               (trade['condition_id'],))
+                    event_open = c2.fetchone()['c']
+                    conn2.close()
+                    if event_open >= max_per_event:
+                        log_event('ENGINE', 'SKIP', f'Max open trades per event reached ({event_open}/{max_per_event})',
+                                  f'{trade.get("title", "")[:50]}')
                         ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
+
+                # In mock mode, allow smaller trades for testing
+                effective_min = 0.01 if mock_mode else min_size
+
+                if trade_size < effective_min:
+                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                    config[ts_key] = trade['timestamp']
+                    save_config(config)
+                    continue
 
                 trader_name = trade.get('name') or trade.get('pseudonym') or (trade.get('wallet_address') or '')[:12]
                 market_title = trade.get('title', 'Unknown')
@@ -963,133 +699,60 @@ def copy_trading_loop():
                 log_event('ENGINE', 'COPY', f'[{mode_label}|{tier_label}|{strategy}] Copying {side_str} from {trader_name}',
                           f'{market_title} | ${trade_size:.2f}')
 
-                # Handle close signals: SELL trades, REDEEM (market resolved), MERGE (manual close)
-                if is_close_signal and trade.get('condition_id'):
+                # In mock mode, if this is a SELL, try to close matching OPEN BUY positions first
+                if mock_mode and side_str == 'SELL' and trade.get('condition_id'):
                     conn_close = get_db()
                     c_close = conn_close.cursor()
-                    # Match on condition_id AND outcome for precise matching
-                    trade_outcome = trade.get('outcome', '')
-                    if trade_outcome:
-                        c_close.execute('''
-                            SELECT id, price, our_size FROM copy_trades
-                            WHERE condition_id = ? AND outcome = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
-                            ORDER BY executed_at ASC
-                        ''', (trade['condition_id'], trade_outcome))
-                    else:
-                        c_close.execute('''
-                            SELECT id, price, our_size FROM copy_trades
-                            WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
-                            ORDER BY executed_at ASC
-                        ''', (trade['condition_id'],))
+                    c_close.execute('''
+                        SELECT id, price, our_size FROM copy_trades
+                        WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS' AND side = 'BUY'
+                        ORDER BY executed_at ASC
+                    ''', (trade['condition_id'],))
                     open_positions = [dict(r) for r in c_close.fetchall()]
                     if open_positions:
-                        # For SELL: use the sell price as exit
-                        # For REDEEM: outcome resolved to 1.0 (won) so exit_price = 1.0 if usdcSize > 0
-                        # For MERGE: merged back to USDC, exit at ~entry (break-even)
-                        if trade_type == 'REDEEM':
-                            # Redeemed = outcome won, exit at 1.0
-                            exit_price = 1.0
-                        elif trade_type == 'MERGE':
-                            # Merged = manual close, use entry price (break-even) or current price
-                            exit_price = float(trade.get('price') or 0)
-                        else:
-                            exit_price = float(trade.get('price') or 0)
-
+                        sell_price = float(trade.get('price') or 0)
                         for op in open_positions:
                             entry_price = float(op.get('price') or 0)
                             op_size = float(op.get('our_size') or 0)
-                            if entry_price <= 0 or op_size <= 0:
-                                continue
-                            # PnL: shares = usd_spent / entry_price, pnl = shares * (exit - entry)
-                            shares = op_size / entry_price
-                            pnl = shares * (exit_price - entry_price)
+                            pnl = (sell_price - entry_price) * op_size
                             pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
                             actual_result = 'WIN' if pnl >= 0 else 'LOSS'
                             c_close.execute('''
                                 UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
                                 WHERE id = ?
-                            ''', (datetime.now().isoformat(), actual_result, exit_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
-                            close_type = trade_type if trade_type in ('REDEEM', 'MERGE') else 'SELL'
-                            mode_label_close = 'MOCK' if mock_mode else 'LIVE'
-                            log_event('ENGINE', actual_result,
-                                      f'[{mode_label_close}|{close_type}] Closed position: {market_title[:50]}',
-                                      f'Entry: {entry_price:.4f} Exit: {exit_price:.4f} Shares: {shares:.2f} PnL: ${pnl:.2f}')
+                            ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
+                            log_event('ENGINE', actual_result, f'[MOCK] Auto-closed position: {market_title[:50]}',
+                                      f'Entry: {entry_price:.2f} Exit: {sell_price:.2f} PnL: ${pnl:.2f}')
                         conn_close.commit()
                         conn_close.close()
-                        # Advance timestamp and skip (don't open a new copy trade for close signals)
-                        ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                        # Advance timestamp and continue (don't open a new SELL copy trade in mock)
+                        ts_key = 'last_mock_processed_timestamp'
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
-                    else:
-                        # No matching open positions found - if REDEEM, check all open for this condition_id
-                        # (outcome might not match exactly due to casing)
-                        if trade_type == 'REDEEM':
-                            c_close.execute('''
-                                SELECT id, price, our_size, outcome FROM copy_trades
-                                WHERE condition_id = ? AND result = 'OPEN' AND status = 'SUCCESS'
-                                ORDER BY executed_at ASC
-                            ''', (trade['condition_id'],))
-                            all_open = [dict(r) for r in c_close.fetchall()]
-                            if all_open:
-                                # The redeemed outcome won (exit 1.0), non-redeemed lost (exit 0.0)
-                                redeemed_outcome = (trade.get('outcome') or '').lower()
-                                for op in all_open:
-                                    entry_price = float(op.get('price') or 0)
-                                    op_size = float(op.get('our_size') or 0)
-                                    op_outcome = (op.get('outcome') or '').lower()
-                                    if entry_price <= 0 or op_size <= 0:
-                                        continue
-                                    # If our position's outcome matches the redeemed one, we won
-                                    if op_outcome == redeemed_outcome:
-                                        exit_price = 1.0
-                                    else:
-                                        exit_price = 0.0
-                                    shares = op_size / entry_price
-                                    pnl = shares * (exit_price - entry_price)
-                                    pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
-                                    actual_result = 'WIN' if pnl >= 0 else 'LOSS'
-                                    c_close.execute('''
-                                        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
-                                        WHERE id = ?
-                                    ''', (datetime.now().isoformat(), actual_result, exit_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
-                                    mode_label_close = 'MOCK' if mock_mode else 'LIVE'
-                                    log_event('ENGINE', actual_result,
-                                              f'[{mode_label_close}|REDEEM] Resolved: {market_title[:50]}',
-                                              f'Our: {op.get("outcome","")} Redeemed: {trade.get("outcome","")} Exit: {exit_price} PnL: ${pnl:.2f}')
-                                conn_close.commit()
-                        conn_close.close()
-                        # Advance timestamp for close signals even if no positions matched
-                        ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                        config[ts_key] = trade['timestamp']
-                        save_config(config)
-                        continue
+                    conn_close.close()
 
                 if mock_mode:
                     success, response, our_size = execute_mock_trade(trade, config)
                 else:
                     success, response, our_size = execute_live_trade(client, trade, config)
 
-                # Fetch market end date from Gamma API
-                cid = trade.get('condition_id', '')
-                end_date = get_market_end_date(cid) if cid else None
-
                 # Record in DB with market metadata
                 conn = get_db()
                 cursor = conn.cursor()
                 cursor.execute('''
-                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, executed_at, response, end_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO copy_trades (original_trade_id, trader_name, market_title, market_slug, event_slug, condition_id, icon, outcome, side, original_size, our_size, price, status, mock, result, executed_at, response)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     trade['id'], trader_name, market_title,
                     trade.get('slug', ''), trade.get('event_slug', ''),
-                    cid, trade.get('icon', ''),
+                    trade.get('condition_id', ''), trade.get('icon', ''),
                     trade.get('outcome', ''), side_str,
                     trade_size, our_size, trade.get('price', 0),
                     'SUCCESS' if success else 'FAILED',
                     1 if mock_mode else 0,
                     'OPEN' if side_str == 'BUY' else 'CLOSED',
-                    datetime.now().isoformat(), response, end_date
+                    datetime.now().isoformat(), response
                 ))
                 conn.commit()
                 conn.close()
@@ -1127,9 +790,6 @@ def start_copy_engine():
     copy_engine['running'] = True
     copy_engine['thread'] = threading.Thread(target=copy_trading_loop, daemon=True)
     copy_engine['thread'].start()
-    # Start market resolution checker in a separate thread
-    resolution_thread = threading.Thread(target=resolution_checker_loop, daemon=True)
-    resolution_thread.start()
 
 
 def stop_copy_engine():
@@ -1297,7 +957,6 @@ def get_config():
     if has_creds:
         usdc_balance = get_usdc_balance(funder)
 
-    pk = config.get('private_key', '')
     safe = {
         'copy_trading_enabled': config.get('copy_trading_enabled', False),
         'copy_percentage': config.get('copy_percentage', 10),
@@ -1305,7 +964,6 @@ def get_config():
         'min_trade_size': config.get('min_trade_size', 10),
         'has_credentials': has_creds,
         'funder_address': funder,
-        'private_key': pk,
         'usdc_balance': round(usdc_balance, 2) if usdc_balance is not None else None,
         'engine_running': copy_engine['running'] and copy_engine['thread'] is not None and copy_engine['thread'].is_alive(),
         'trades_copied': copy_engine['trades_copied'],
@@ -1318,7 +976,7 @@ def get_config():
         'copy_strategy': config.get('copy_strategy', 'PERCENTAGE'),
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
-        'max_events': config.get('max_events', 0),
+        'max_trades': config.get('max_trades', 0),
         'max_trades_per_event': config.get('max_trades_per_event', 0),
     }
     return jsonify(safe)
@@ -1351,9 +1009,8 @@ def update_config():
         config['fixed_trade_size'] = max(0.1, float(data['fixed_trade_size']))
     if 'prob_sizing_enabled' in data:
         config['prob_sizing_enabled'] = bool(data['prob_sizing_enabled'])
-    if 'max_events' in data:
-        config['max_events'] = max(0, int(data['max_events']))
-        log_event('APP', 'INFO', f'Max events set to {config["max_events"]}')
+    if 'max_trades' in data:
+        config['max_trades'] = max(0, int(data['max_trades']))
     if 'max_trades_per_event' in data:
         config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
         log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
@@ -1375,20 +1032,9 @@ def update_credentials():
     config['private_key'] = pk
     config['funder_address'] = fa
     config['signature_type'] = int(st) if st is not None else 1
-    # Also accept optional copy trading settings during setup
-    if 'copy_percentage' in data:
-        config['copy_percentage'] = max(1, min(100, int(data['copy_percentage'])))
-    if 'max_trade_size' in data:
-        config['max_trade_size'] = max(1, float(data['max_trade_size']))
-    if 'min_trade_size' in data:
-        config['min_trade_size'] = max(0, float(data['min_trade_size']))
-    if 'copy_trading_enabled' in data:
-        config['copy_trading_enabled'] = bool(data['copy_trading_enabled'])
     save_config(config)
-    # Test wallet balance
-    balance = get_usdc_balance(fa)
-    log_event('APP', 'INFO', 'Credentials updated via dashboard', f'Funder: {fa} | Balance: ${balance:.2f}')
-    return jsonify({'success': True, 'balance': round(balance, 2)})
+    log_event('APP', 'INFO', 'Credentials updated', f'Funder: {fa[:10]}...')
+    return jsonify({'success': True})
 
 
 @app.route('/api/balance', methods=['GET'])
@@ -1464,22 +1110,17 @@ def close_copy_trade(trade_id):
         return jsonify({'error': 'Trade not found'}), 404
     td = dict(trade)
 
-    entry_price = float(td.get('price', 0) or 0)
-    our_size = float(td.get('our_size', 0) or 0)
+    entry_price = td.get('price', 0) or 0
+    our_size = td.get('our_size', 0) or 0
     side = (td.get('side', '') or '').upper()
-    cp = float(current_price or 0)
 
-    # Calculate PnL: shares = usd / entry_price, pnl = shares * (exit - entry)
-    if entry_price > 0 and our_size > 0:
-        shares = our_size / entry_price
-        if side == 'BUY':
-            pnl = shares * (cp - entry_price)
-        else:
-            pnl = our_size - (shares * cp)
+    # Calculate PnL
+    if side == 'BUY':
+        pnl = (float(current_price) - float(entry_price)) * float(our_size)
     else:
-        pnl = 0
+        pnl = (float(entry_price) - float(current_price)) * float(our_size)
 
-    pnl_pct = (pnl / our_size * 100) if our_size > 0 else 0
+    pnl_pct = (pnl / float(our_size) * 100) if our_size > 0 else 0
     actual_result = 'WIN' if pnl >= 0 else 'LOSS'
 
     cursor.execute('''
@@ -1491,13 +1132,6 @@ def close_copy_trade(trade_id):
     log_event('ENGINE', actual_result, f'Trade closed: {td.get("market_title", "")[:50]}', f'PnL: ${pnl:.2f} ({pnl_pct:.1f}%)')
     return jsonify({'success': True, 'pnl': round(pnl, 4), 'result': actual_result})
 
-
-
-@app.route('/api/check-resolutions', methods=['POST'])
-def trigger_resolution_check():
-    """Manually trigger market resolution check"""
-    closed = check_resolved_markets()
-    return jsonify({'success': True, 'closed': closed})
 
 
 @app.route('/api/market-cache/stats', methods=['GET'])

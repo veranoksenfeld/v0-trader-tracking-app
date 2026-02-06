@@ -1,7 +1,7 @@
 """
-Polymarket Real-Time Trade & Activity Fetcher
-Fetches TRADE, REDEEM, SPLIT, MERGE activities from target wallets.
-Uses WebSocket for near-instant trade detection + fast REST polling as fallback.
+Polymarket Real-Time Trade Fetcher
+Uses WebSocket (wss://ws-subscriptions-clob.polymarket.com) for near-instant
+trade detection, with fast REST polling (every 5s) as fallback.
 """
 import requests
 import sqlite3
@@ -42,14 +42,7 @@ ACTIVITY_API = 'https://data-api.polymarket.com/activity'
 PROFILE_API = 'https://gamma-api.polymarket.com/public-profile'
 WSS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market'
 
-# Activity types to fetch from the Polymarket API
-# TRADE  = buy/sell on a market
-# REDEEM = tokens redeemed after market resolution (position closed by settlement)
-# SPLIT  = USDC split into Yes+No tokens
-# MERGE  = Yes+No tokens merged back into USDC (manual position close)
-ACTIVITY_TYPES = ['TRADE', 'REDEEM', 'MERGE']
-
-# Polling interval in seconds
+# Polling interval in seconds (used as fallback alongside websocket)
 FAST_POLL_INTERVAL = 5
 PROFILE_REFRESH_INTERVAL = 300  # Refresh profiles every 5 minutes
 
@@ -115,7 +108,7 @@ def update_trader_profile(trader_id, wallet_address, conn):
 
 
 def insert_trade(trader_id, trade, conn):
-    """Insert a single trade/activity into the database. Returns True if new."""
+    """Insert a single trade into the database. Returns True if new."""
     tx_hash = trade.get('transactionHash')
     if not tx_hash:
         return False
@@ -125,25 +118,15 @@ def insert_trade(trader_id, trade, conn):
     if cursor.fetchone():
         return False
 
-    # Determine the activity type
-    trade_type = trade.get('type', 'TRADE')
-
-    # For REDEEM/MERGE, the side represents the close action
-    side = trade.get('side')
-    if trade_type == 'REDEEM':
-        side = 'REDEEM'
-    elif trade_type == 'MERGE':
-        side = 'MERGE'
-
     cursor.execute('''
         INSERT INTO trades (
-            trader_id, transaction_hash, trade_type, side, size, price, usdc_size,
+            trader_id, transaction_hash, side, size, price, usdc_size,
             timestamp, title, slug, icon, event_slug, outcome,
             outcome_index, condition_id, asset
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
-        trader_id, tx_hash, trade_type,
-        side, trade.get('size'), trade.get('price'),
+        trader_id, tx_hash,
+        trade.get('side'), trade.get('size'), trade.get('price'),
         trade.get('usdcSize'), trade.get('timestamp'),
         trade.get('title'), trade.get('slug'), trade.get('icon'),
         trade.get('eventSlug'), trade.get('outcome'),
@@ -154,66 +137,32 @@ def insert_trade(trader_id, trade, conn):
     return True
 
 
-def fetch_activities_for_trader(trader_id, wallet_address, conn, limit=50):
-    """
-    Fetch recent activities (trades, redeems, merges) for a specific trader.
-    Each activity type is fetched separately for reliability.
-    """
-    total_new = 0
-
-    for activity_type in ACTIVITY_TYPES:
-        try:
-            response = requests.get(
-                ACTIVITY_API,
-                params={
-                    'user': wallet_address,
-                    'type': activity_type,
-                    'limit': limit,
-                    'sortBy': 'TIMESTAMP'
-                },
-                timeout=15
-            )
-            if response.status_code != 200:
-                continue
-
-            activities = response.json()
-            if not activities:
-                continue
-
-            for activity in activities:
-                # Inject the type into the activity dict so insert_trade can use it
-                activity['type'] = activity.get('type', activity_type)
-
-                if insert_trade(trader_id, activity, conn):
-                    total_new += 1
-                    side = activity.get('side', '?')
-                    title = (activity.get('title') or 'Unknown')[:40]
-                    size = activity.get('usdcSize', 0)
-
-                    if activity_type == 'TRADE':
-                        print(f"    NEW {side}: ${size} on {title}")
-                        log_event('TRADE', f'Detected: {side} ${size} on {title}')
-                    elif activity_type == 'REDEEM':
-                        print(f"    REDEEM: ${size} on {title}")
-                        log_event('REDEEM', f'Redeemed: ${size} on {title}')
-                    elif activity_type == 'MERGE':
-                        print(f"    MERGE: ${size} on {title}")
-                        log_event('MERGE', f'Merged: ${size} on {title}')
-
-            # Small delay between types to avoid rate-limiting
-            time.sleep(0.2)
-
-        except Exception as e:
-            print(f"  Error fetching {activity_type} for {wallet_address[:10]}...: {e}")
-            log_event('ERROR', f'Fetch {activity_type} error for {wallet_address[:10]}', str(e))
-
-    return total_new
-
-
-# Keep backward compat name for engine imports
 def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
-    """Backward compatible wrapper - now fetches all activity types"""
-    return fetch_activities_for_trader(trader_id, wallet_address, conn, limit)
+    """Fetch recent trades for a specific trader via REST API"""
+    try:
+        response = requests.get(
+            ACTIVITY_API,
+            params={'user': wallet_address, 'type': 'TRADE', 'limit': limit},
+            timeout=15
+        )
+        if response.status_code != 200:
+            return 0
+
+        trades = response.json()
+        new_count = 0
+        for trade in trades:
+            if insert_trade(trader_id, trade, conn):
+                new_count += 1
+                side = trade.get('side', '?')
+                title = trade.get('title', 'Unknown')[:40]
+                size = trade.get('usdcSize', 0)
+                print(f"    NEW TRADE: {side} ${size} on {title}")
+                log_event('TRADE', f'Detected: {side} ${size} on {title}')
+        return new_count
+    except Exception as e:
+        print(f"  Error fetching trades for {wallet_address[:10]}...: {e}")
+        log_event('ERROR', f'Fetch error for {wallet_address[:10]}', str(e))
+        return 0
 
 
 # ---------------------------------------------------------------------------
@@ -221,9 +170,8 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
 # ---------------------------------------------------------------------------
 
 def fast_poll_loop():
-    """Poll REST API every 5 seconds for new trades and activities"""
+    """Poll REST API every 5 seconds for new trades"""
     print(f"[{datetime.now()}] REST polling started (every {FAST_POLL_INTERVAL}s)")
-    print(f"  Fetching activity types: {', '.join(ACTIVITY_TYPES)}")
     last_profile_refresh = time.time()
 
     while True:
@@ -246,15 +194,15 @@ def fast_poll_loop():
                 if not trader['name'] and (now - last_profile_refresh > PROFILE_REFRESH_INTERVAL):
                     update_trader_profile(tid, addr, conn)
 
-                new = fetch_activities_for_trader(tid, addr, conn, limit=20)
+                new = fetch_trades_for_trader(tid, addr, conn, limit=20)
                 total_new += new
 
-                # Tiny delay between traders to avoid rate-limiting
+                # Tiny delay to avoid rate-limiting
                 time.sleep(0.3)
 
             if total_new > 0:
-                print(f"[{datetime.now()}] Poll found {total_new} new activity/trade(s)")
-                log_event('INFO', f'Poll found {total_new} new activity/trade(s)')
+                print(f"[{datetime.now()}] Poll found {total_new} new trade(s)")
+                log_event('INFO', f'Poll found {total_new} new trade(s)')
 
             # Refresh profiles periodically
             if time.time() - last_profile_refresh > PROFILE_REFRESH_INTERVAL:
@@ -345,12 +293,12 @@ class PolymarketWSTracker:
                 # Check if any tracked trader is in this market
                 traders_in_market = self.asset_to_traders.get(asset_id, [])
                 if traders_in_market:
-                    # Immediately fetch fresh activity for those traders
+                    # Immediately fetch fresh trades for those traders
                     conn = get_db()
                     for trader_id, wallet in traders_in_market:
-                        new = fetch_activities_for_trader(trader_id, wallet, conn, limit=10)
+                        new = fetch_trades_for_trader(trader_id, wallet, conn, limit=10)
                         if new > 0:
-                            print(f"[WS] Captured {new} activity(s) for tracked trader {wallet[:10]}...")
+                            print(f"[WS] Captured {new} trade(s) for tracked trader {wallet[:10]}...")
                     conn.close()
 
         except json.JSONDecodeError:
@@ -420,11 +368,10 @@ def run_websocket():
 
 def run_fetcher():
     print("=" * 60)
-    print("  Polymarket Real-Time Trade & Activity Fetcher")
-    print(f"  Activity types: {', '.join(ACTIVITY_TYPES)}")
+    print("  Polymarket Real-Time Trade Fetcher")
     print("=" * 60)
     print()
-    log_event('INFO', 'Fetcher started', f'Types: {",".join(ACTIVITY_TYPES)} | WS: {"available" if WS_AVAILABLE else "unavailable"}')
+    log_event('INFO', 'Fetcher started', f'WS: {"available" if WS_AVAILABLE else "unavailable"}')
 
     # Initial fetch for all traders
     traders = get_tracked_traders()
@@ -439,8 +386,8 @@ def run_fetcher():
             if not trader['name']:
                 update_trader_profile(tid, addr, conn)
 
-            new = fetch_activities_for_trader(tid, addr, conn, limit=100)
-            print(f"  {name}: {new} new activity/trade(s)")
+            new = fetch_trades_for_trader(tid, addr, conn, limit=100)
+            print(f"  {name}: {new} new trade(s)")
             time.sleep(0.5)
         conn.close()
         print()
