@@ -1,9 +1,7 @@
 """
-Polymarket Trade Fetcher - Alchemy Edition
-Uses Alchemy's alchemy_getAssetTransfers on Polygon to track ERC-1155
-outcome-token transfers through the Polymarket CTF Exchange contracts.
-Falls back to the Polymarket Activity REST API when Alchemy data needs
-enrichment.
+Polymarket Trade Fetcher
+Uses Polymarket Data API (/trades, /activity) as the primary source for
+tracking trades. Uses the public Polygon RPC for on-chain lookups when needed.
 """
 import requests
 import sqlite3
@@ -19,22 +17,9 @@ DATABASE = 'polymarket_trades.db'
 _db_write_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Alchemy configuration (env var first, then config.json fallback)
+# Polygon RPC (public endpoint, no API key needed)
 # ---------------------------------------------------------------------------
-def _resolve_alchemy_key():
-    key = os.environ.get('ALCHEMY_API_KEY', '')
-    if not key:
-        try:
-            with open('config.json', 'r') as f:
-                key = json.load(f).get('alchemy_api_key', '')
-            if key:
-                os.environ['ALCHEMY_API_KEY'] = key
-        except Exception:
-            pass
-    return key
-
-ALCHEMY_API_KEY = _resolve_alchemy_key()
-ALCHEMY_POLYGON_URL = f'https://polygon-mainnet.g.alchemy.com/v2/{ALCHEMY_API_KEY}'
+POLYGON_RPC = 'https://polygon-rpc.com/'
 
 # Polymarket contract addresses on Polygon
 CTF_EXCHANGE_NEGRISK = '0xC5d563A36AE78145C45a50134d48A1215220f80a'.lower()
@@ -46,7 +31,7 @@ USDCE_POLYGON        = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359'.lower()
 
 POLYMARKET_CONTRACTS = {CTF_EXCHANGE_NEGRISK, CTF_EXCHANGE_LEGACY, NEG_RISK_ADAPTER, CTF_CONTRACT}
 
-# Polymarket REST fallback
+# Polymarket Data API
 ACTIVITY_API = 'https://data-api.polymarket.com/activity'
 TRADES_API   = 'https://data-api.polymarket.com/trades'
 PROFILE_API  = 'https://gamma-api.polymarket.com/public-profile'
@@ -237,209 +222,6 @@ def get_market_by_token(token_id):
 
 
 # ---------------------------------------------------------------------------
-# Alchemy - fetch ERC-1155 transfers (Polymarket outcome tokens)
-# ---------------------------------------------------------------------------
-
-def _alchemy_rpc(method, params):
-    """Make a JSON-RPC call to Alchemy Polygon endpoint."""
-    payload = {
-        'jsonrpc': '2.0',
-        'id': 1,
-        'method': method,
-        'params': params,
-    }
-    r = requests.post(ALCHEMY_POLYGON_URL, json=payload, timeout=20)
-    r.raise_for_status()
-    return r.json().get('result', {})
-
-
-def fetch_erc1155_transfers(wallet, direction='to', from_block='0x0', page_key=None):
-    """
-    Fetch ERC-1155 transfers to/from a wallet using Alchemy.
-    direction='to'   -> tokens received (BUY side)
-    direction='from' -> tokens sent (SELL side)
-    """
-    params = {
-        'category': ['erc1155'],
-        'withMetadata': True,
-        'excludeZeroValue': True,
-        'maxCount': '0x64',  # 100
-        'fromBlock': from_block,
-        'toBlock': 'latest',
-        'order': 'desc',
-        'contractAddresses': [CTF_CONTRACT],  # Only Polymarket CTF tokens
-    }
-    if direction == 'to':
-        params['toAddress'] = wallet
-    else:
-        params['fromAddress'] = wallet
-
-    if page_key:
-        params['pageKey'] = page_key
-
-    result = _alchemy_rpc('alchemy_getAssetTransfers', [params])
-    return result.get('transfers', []), result.get('pageKey', '')
-
-
-def fetch_usdc_value_from_tx(tx_hash, wallet):
-    """
-    Get the USDC amount from a transaction receipt by looking at ERC-20
-    Transfer events involving the wallet.
-    """
-    try:
-        result = _alchemy_rpc('eth_getTransactionReceipt', [tx_hash])
-        if not result or not result.get('logs'):
-            return 0.0
-
-        # ERC-20 Transfer event topic
-        transfer_topic = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
-        usdc_addrs = {USDC_POLYGON, USDCE_POLYGON}
-        wallet_padded = '0x' + wallet.replace('0x', '').lower().zfill(64)
-
-        total_usdc = 0.0
-        for log in result.get('logs', []):
-            contract = (log.get('address') or '').lower()
-            topics = log.get('topics', [])
-            if contract not in usdc_addrs or len(topics) < 3:
-                continue
-            if topics[0].lower() != transfer_topic:
-                continue
-            # Check if wallet is sender or receiver
-            from_addr = topics[1].lower()
-            to_addr = topics[2].lower()
-            if from_addr == wallet_padded or to_addr == wallet_padded:
-                raw = int(log.get('data', '0x0'), 16)
-                total_usdc += raw / 1e6  # USDC has 6 decimals
-        return round(total_usdc, 4)
-    except Exception:
-        return 0.0
-
-
-def process_alchemy_transfers(trader_id, wallet, transfers, side, conn):
-    """
-    Process Alchemy ERC-1155 transfers and insert as trades.
-    side='BUY' for tokens received, 'SELL' for tokens sent.
-    Returns count of new trades inserted.
-    """
-    new_count = 0
-    for tx in transfers:
-        tx_hash = tx.get('hash', '')
-        if not tx_hash:
-            continue
-
-        # Check if this is a Polymarket CTF token transfer
-        from_addr = (tx.get('from') or '').lower()
-        to_addr = (tx.get('to') or '').lower()
-        raw_contract = (tx.get('rawContract', {}).get('address') or '').lower()
-        # Accept if: the ERC-1155 contract is the Polymarket CTF token,
-        # OR either party is a known Polymarket contract
-        is_polymarket = (
-            raw_contract == CTF_CONTRACT or
-            from_addr in POLYMARKET_CONTRACTS or
-            to_addr in POLYMARKET_CONTRACTS
-        )
-        if not is_polymarket:
-            continue
-
-        with _db_write_lock:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
-            if cursor.fetchone():
-                continue
-
-        # Extract token info
-        erc1155_meta = tx.get('erc1155Metadata') or []
-        if not erc1155_meta:
-            continue
-
-        token_id = erc1155_meta[0].get('tokenId', '')
-        token_value_hex = erc1155_meta[0].get('value', '0x0')
-        try:
-            # Polymarket CTF tokens use 1e6 decimals (same as USDC)
-            raw = int(token_value_hex, 16) if token_value_hex.startswith('0x') else int(float(token_value_hex))
-            size = raw / 1e6
-        except Exception:
-            size = 0.0
-
-        # Get USDC value from the tx receipt
-        usdc_size = fetch_usdc_value_from_tx(tx_hash, wallet)
-
-        # Calculate price (USDC per token)
-        price = usdc_size / size if size > 0 else 0.0
-
-        # Get market metadata from Gamma API using the token_id
-        # Convert hex token_id to decimal for Gamma API lookup
-        try:
-            token_id_dec = str(int(token_id, 16)) if token_id.startswith('0x') else token_id
-        except Exception:
-            token_id_dec = token_id
-
-        market = get_market_by_token(token_id_dec)
-
-        title = ''
-        slug = ''
-        icon = ''
-        event_slug = ''
-        outcome = ''
-        outcome_index = 0
-        condition_id = ''
-        end_date = ''
-
-        if market:
-            title = market.get('title', '')
-            slug = market.get('slug', '')
-            icon = market.get('icon', '')
-            event_slug = market.get('event_slug', '')
-            outcome = market.get('outcome', '')
-            outcome_index = market.get('outcome_index', 0)
-            condition_id = market.get('condition_id', '')
-            end_date = market.get('end_date', '')
-
-        # Get timestamp from metadata
-        block_ts = ''
-        meta = tx.get('metadata', {})
-        if meta and meta.get('blockTimestamp'):
-            block_ts = meta['blockTimestamp']
-
-        # Convert ISO timestamp to unix epoch (seconds)
-        timestamp_unix = 0
-        if block_ts:
-            try:
-                dt = datetime.fromisoformat(block_ts.replace('Z', '+00:00'))
-                timestamp_unix = int(dt.timestamp())
-            except Exception:
-                pass
-
-        direction = 'OPEN' if side == 'BUY' else 'CLOSE'
-
-        with _db_write_lock:
-            cursor = conn.cursor()
-            # Recheck to avoid race
-            cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
-            if cursor.fetchone():
-                continue
-            cursor.execute('''
-                INSERT INTO trades (
-                    trader_id, transaction_hash, side, size, price, usdc_size,
-                    timestamp, title, slug, icon, event_slug, outcome,
-                    outcome_index, condition_id, asset, direction, end_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                trader_id, tx_hash, side, size, price, usdc_size,
-                timestamp_unix, title, slug, icon, event_slug, outcome,
-                outcome_index, condition_id, token_id_dec,
-                direction, end_date
-            ))
-            conn.commit()
-        new_count += 1
-        price_c = f"{price*100:.0f}c" if price else '?'
-        print(f"    NEW: {side} {outcome or '?'} {size:.2f} @ {price_c} ${usdc_size:.2f} | {title[:40]}")
-        log_event('TRADE', f'{side} {outcome} ${usdc_size:.2f} @ {price_c} on {title[:40]}')
-
-    return new_count
-
-
-# ---------------------------------------------------------------------------
 # Polymarket Data API (primary source)
 # ---------------------------------------------------------------------------
 
@@ -547,16 +329,15 @@ def insert_trade_from_activity(trader_id, trade, conn):
 
 
 # ---------------------------------------------------------------------------
-# Combined fetch: Data API first, Alchemy fallback
+# Combined fetch: Data API /trades + /activity
 # ---------------------------------------------------------------------------
 
 def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     """
-    Fetch trades for a trader.
+    Fetch trades for a trader using Polymarket Data API.
     Strategy:
-    1. Try Polymarket Data API /trades endpoint (authoritative, uses profile address)
-    2. Try Polymarket Data API /activity endpoint
-    3. Fallback to Alchemy ERC-1155 transfers
+    1. Try /trades endpoint (authoritative)
+    2. Fallback to /activity endpoint
     """
     total_new = 0
     eoa = wallet_address.lower()
@@ -587,7 +368,7 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     except Exception as e:
         print(f"  [Trades API] Error for {eoa[:10]}...: {e}")
 
-    # --- Method 2: Polymarket /activity API ---
+    # --- Method 2: Polymarket /activity API (fallback) ---
     try:
         activities = _fetch_activity(eoa, limit)
         print(f"  [Activity API] {eoa[:10]}... returned {len(activities)} trade(s)")
@@ -611,32 +392,6 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
     except Exception as e:
         print(f"  [Activity API] Error for {eoa[:10]}...: {e}")
 
-    # --- Method 3: Alchemy fallback (on-chain ERC-1155 transfers) ---
-    if ALCHEMY_API_KEY:
-        proxy = resolve_proxy_wallet(wallet_address)
-        wallets_to_scan = [eoa]
-        if proxy and proxy != eoa:
-            wallets_to_scan.append(proxy)
-
-        try:
-            for wallet in wallets_to_scan:
-                buys, _ = fetch_erc1155_transfers(wallet, direction='to')
-                print(f"  [Alchemy] {wallet[:10]}... BUY transfers: {len(buys)}")
-                new_buys = process_alchemy_transfers(trader_id, wallet, buys, 'BUY', conn)
-                total_new += new_buys
-
-                sells, _ = fetch_erc1155_transfers(wallet, direction='from')
-                print(f"  [Alchemy] {wallet[:10]}... SELL transfers: {len(sells)}")
-                new_sells = process_alchemy_transfers(trader_id, wallet, sells, 'SELL', conn)
-                total_new += new_sells
-
-            if total_new > 0:
-                print(f"  [Alchemy] {total_new} new trade(s) for {eoa[:10]}...")
-                log_event('INFO', f'Alchemy: {total_new} new trade(s) for {eoa[:10]}')
-        except Exception as e:
-            print(f"  [Alchemy] Error for {eoa[:10]}...: {e}")
-            log_event('WARN', f'Alchemy error for {eoa[:10]}', str(e))
-
     return total_new
 
 
@@ -646,9 +401,8 @@ def fetch_trades_for_trader(trader_id, wallet_address, conn, limit=50):
 
 def poll_loop():
     print(f"[{datetime.now()}] Polling started (every {POLL_INTERVAL}s)")
-    print(f"  Alchemy: {'configured' if ALCHEMY_API_KEY else 'NOT SET - using Activity API fallback'}")
-    if not ALCHEMY_API_KEY:
-        print("  Set ALCHEMY_API_KEY env var for reliable on-chain tracking")
+    print(f"  RPC: {POLYGON_RPC}")
+    print(f"  Source: Polymarket Data API (/trades + /activity)")
 
     last_profile_refresh = time.time()
 
@@ -695,9 +449,9 @@ def poll_loop():
 
 def run_fetcher():
     print("=" * 60)
-    print("  Polymarket Trade Fetcher (Data API + Alchemy fallback)")
+    print("  Polymarket Trade Fetcher (Data API + Polygon RPC)")
     print("=" * 60)
-    mode = 'Data API + Alchemy fallback' if ALCHEMY_API_KEY else 'Data API only'
+    mode = 'Data API (polygon-rpc.com)'
     print(f"  Mode: {mode}")
     log_event('INFO', 'Fetcher started', f'Mode: {mode}')
 

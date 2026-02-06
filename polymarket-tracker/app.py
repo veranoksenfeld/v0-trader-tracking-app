@@ -13,7 +13,7 @@ import threading
 import random
 import requests as req
 
-# Import fetcher functions for Alchemy-based trade fetching
+# Import fetcher functions
 try:
     from fetcher import fetch_trades_for_trader as fetcher_fetch, resolve_proxy_wallet, update_trader_profile as fetcher_update_profile
     FETCHER_AVAILABLE = True
@@ -23,21 +23,6 @@ except ImportError:
 app = Flask(__name__)
 DATABASE = 'polymarket_trades.db'
 CONFIG_FILE = 'config.json'
-
-def _resolve_alchemy_key():
-    """Read Alchemy API key from env var first, then config.json fallback."""
-    key = os.environ.get('ALCHEMY_API_KEY', '')
-    if not key:
-        try:
-            with open(CONFIG_FILE, 'r') as f:
-                key = json.load(f).get('alchemy_api_key', '')
-            if key:
-                os.environ['ALCHEMY_API_KEY'] = key  # propagate to fetcher module
-        except Exception:
-            pass
-    return key
-
-ALCHEMY_API_KEY = _resolve_alchemy_key()
 
 # ---- Serialised DB write lock (prevents "database is locked") ----
 _db_write_lock = threading.Lock()
@@ -1199,7 +1184,7 @@ def add_trader():
             except Exception:
                 pass
 
-            # Use fetcher module (Alchemy + Activity API)
+            # Use fetcher module (Data API + Polygon RPC)
             if FETCHER_AVAILABLE:
                 total_new = fetcher_fetch(tid, wallet, c, limit=100)
             else:
@@ -1383,63 +1368,7 @@ def debug_trades_sample():
     return jsonify(result)
 
 
-@app.route('/api/debug/alchemy-test/<wallet>', methods=['GET'])
-def debug_alchemy_test(wallet):
-    """Debug: test Alchemy ERC-1155 scan for a specific wallet address."""
-    wallet = wallet.lower()
-    result = {
-        'wallet': wallet,
-        'alchemy_configured': bool(ALCHEMY_API_KEY),
-        'proxy_wallet': None,
-        'addresses_scanned': [],
-        'buys': [],
-        'sells': [],
-    }
-    if not FETCHER_AVAILABLE:
-        result['error'] = 'Fetcher module not loaded'
-        return jsonify(result)
-    if not ALCHEMY_API_KEY:
-        result['error'] = 'ALCHEMY_API_KEY not set'
-        return jsonify(result)
 
-    from fetcher import resolve_proxy_wallet as rp, fetch_erc1155_transfers as fe
-    proxy = rp(wallet)
-    result['proxy_wallet'] = proxy
-
-    addrs = [wallet]
-    if proxy and proxy != wallet:
-        addrs.append(proxy)
-    result['addresses_scanned'] = addrs
-
-    for addr in addrs:
-        try:
-            buys, _ = fe(addr, direction='to')
-            for b in buys[:5]:
-                result['buys'].append({
-                    'hash': b.get('hash','')[:20],
-                    'from': b.get('from','')[:15],
-                    'to': b.get('to','')[:15],
-                    'raw_contract': (b.get('rawContract',{}).get('address') or '')[:15],
-                    'erc1155': b.get('erc1155Metadata', [])[:1],
-                    'blockNum': b.get('blockNum',''),
-                })
-        except Exception as e:
-            result['buys'].append({'error': str(e)})
-        try:
-            sells, _ = fe(addr, direction='from')
-            for s in sells[:5]:
-                result['sells'].append({
-                    'hash': s.get('hash','')[:20],
-                    'from': s.get('from','')[:15],
-                    'to': s.get('to','')[:15],
-                    'raw_contract': (s.get('rawContract',{}).get('address') or '')[:15],
-                    'erc1155': s.get('erc1155Metadata', [])[:1],
-                    'blockNum': s.get('blockNum',''),
-                })
-        except Exception as e:
-            result['sells'].append({'error': str(e)})
-
-    result['total_buys'] = len(result['buys'])
     result['total_sells'] = len(result['sells'])
     return jsonify(result)
 
@@ -1477,8 +1406,7 @@ def get_stats():
     return jsonify({
         'trader_count': trader_count, 'trade_count': trade_count,
         'total_volume': round(total_volume, 2), 'last_fetch': last_fetch,
-        'fetcher_mode': 'Data API' + (' + Alchemy' if ALCHEMY_API_KEY else ''),
-        'alchemy_configured': bool(ALCHEMY_API_KEY),
+        'fetcher_mode': 'Data API (polygon-rpc.com)',
     })
 
 
@@ -1951,7 +1879,7 @@ if __name__ == '__main__':
     print("=" * 60)
     print("  Polymarket Copy Trader")
     print("  Dashboard: http://localhost:5000")
-    print(f"  Fetcher: {'Alchemy (Polygon)' if ALCHEMY_API_KEY else 'Activity API (set ALCHEMY_API_KEY for on-chain)'}")
+    print(f"  Fetcher: Data API (polygon-rpc.com)")
     print(f"  CLOB client: {'Available' if CLOB_AVAILABLE else 'Not installed (mock only)'}")
     print("  Copy engine running in background")
     print("=" * 60)

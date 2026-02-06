@@ -593,7 +593,7 @@
     }
 
     // ---- Stats & Trades ----
-    async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color=s.alchemy_configured?'var(--green)':'var(--orange)';}}catch(e){} }
+    async function fetchStats() { try{const r=await fetch('/api/stats');const s=await r.json();const b=document.getElementById('fetcher-mode-badge');if(b&&s.fetcher_mode){b.textContent=s.fetcher_mode;b.style.color='var(--green)';}}catch(e){} }
     async function fetchTrades() { try{let url='/api/trades?limit=200'; if(selectedTraderId)url+='&trader_id='+selectedTraderId; const r=await fetch(url); allTrades=await r.json(); renderTrades();}catch(e){} }
 
     function filterTrades(f) { currentFilter=f; document.querySelectorAll('[data-filter]').forEach(b=>b.classList.toggle('active',b.dataset.filter===f)); renderTrades(); }
