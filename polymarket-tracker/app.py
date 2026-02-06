@@ -33,30 +33,6 @@ copy_engine = {
     'trades_failed': 0,
 }
 
-# ---- Mempool Monitor State (from MempoolMonitorService) ----
-mempool_monitor = {
-    'running': False,
-    'thread': None,
-    'pending_txns_seen': 0,
-    'frontrun_attempts': 0,
-    'frontrun_successes': 0,
-    'last_pending_tx': None,
-}
-
-# Default frontrunning / mempool config values (from repo's .env.example)
-DEFAULT_FRONTRUN_CONFIG = {
-    'frontrun_enabled': False,
-    'frontrun_size_multiplier': 0.5,  # 50% of target trade size
-    'gas_price_multiplier': 1.2,       # 20% higher gas for priority
-    'min_trade_size_usd': 100,         # Minimum trade size to frontrun
-    'retry_limit': 3,                  # Max retry attempts
-    'fetch_interval': 1,               # Polling interval (seconds)
-    'trade_aggregation_enabled': False,
-    'trade_aggregation_window_seconds': 300,  # 5 min window
-    'target_addresses': '',            # Comma-separated addresses to frontrun
-}
-
-
 # ============================================
 #  EXECUTION TIERS (from Rust config/mod.rs)
 # ============================================
@@ -338,72 +314,6 @@ def get_usdc_allowance(funder_address, spender='0x4bFb41d5B3570DeFd03C39a9A4D8dE
     if result and result != '0x':
         return int(result, 16) / 1e6
     return 0
-
-
-# ============================================
-#  TRADE AGGREGATION (from repo config)
-# ============================================
-
-_aggregation_buffer = {}  # key: (condition_id, side) -> {'trades': [...], 'window_start': timestamp}
-_agg_lock = threading.Lock()
-
-
-def aggregate_trade(trade, config):
-    """
-    Optionally aggregate trades within a time window before executing.
-    Returns (should_execute_now, aggregated_trade_or_none).
-    From repo: TRADE_AGGREGATION_ENABLED + TRADE_AGGREGATION_WINDOW_SECONDS.
-    """
-    if not config.get('trade_aggregation_enabled', False):
-        return True, trade
-
-    window_secs = config.get('trade_aggregation_window_seconds', 300)
-    cid = trade.get('condition_id', '')
-    side = (trade.get('side') or '').upper()
-    key = (cid, side)
-    now = time.time()
-
-    with _agg_lock:
-        if key not in _aggregation_buffer:
-            _aggregation_buffer[key] = {'trades': [trade], 'window_start': now}
-            return False, None  # Buffer and wait
-
-        buf = _aggregation_buffer[key]
-        buf['trades'].append(trade)
-
-        # Check if window has expired
-        if now - buf['window_start'] >= window_secs:
-            # Aggregate: sum sizes, average price
-            agg_trade = dict(trade)  # Use last trade as base
-            total_usdc = sum(float(t.get('usdc_size') or 0) for t in buf['trades'])
-            total_size = sum(float(t.get('size') or 0) for t in buf['trades'])
-            prices = [float(t.get('price') or 0) for t in buf['trades'] if t.get('price')]
-            avg_price = sum(prices) / len(prices) if prices else 0
-
-            agg_trade['usdc_size'] = total_usdc
-            agg_trade['size'] = total_size
-            agg_trade['price'] = avg_price
-            agg_trade['_aggregated_count'] = len(buf['trades'])
-
-            del _aggregation_buffer[key]
-            return True, agg_trade
-
-        return False, None  # Still within window
-
-
-def flush_aggregation_buffers():
-    """Force-flush all aggregation buffers (e.g., on shutdown)."""
-    results = []
-    with _agg_lock:
-        for key, buf in list(_aggregation_buffer.items()):
-            if buf['trades']:
-                trade = buf['trades'][-1]
-                total_usdc = sum(float(t.get('usdc_size') or 0) for t in buf['trades'])
-                trade['usdc_size'] = total_usdc
-                trade['_aggregated_count'] = len(buf['trades'])
-                results.append(trade)
-        _aggregation_buffer.clear()
-    return results
 
 
 # ---- Database Init ----
@@ -721,8 +631,8 @@ def execute_live_trade(client, trade, config):
         signed_order = client.create_market_order(market_order)
         resp = client.post_order(signed_order, OrderType.FOK)
 
-        # Resubmit logic (from repo: RETRY_LIMIT config): retry with price escalation on failure
-        retry_limit = config.get('retry_limit', DEFAULT_FRONTRUN_CONFIG['retry_limit'])
+        # Resubmit logic: retry with price escalation on failure
+        retry_limit = config.get('retry_limit', 3)
         if not resp or (hasattr(resp, 'get') and resp.get('error_msg')):
             max_retries = min(retry_limit, 5)  # Cap at 5
             for attempt in range(max_retries):
@@ -879,21 +789,6 @@ def copy_trading_loop():
 
                 log_event('ENGINE', 'COPY', f'[{mode_label}|{tier_label}|{strategy}] Copying {side_str} from {trader_name}',
                           f'{market_title} | ${trade_size:.2f}')
-
-                # Trade aggregation (from repo: TRADE_AGGREGATION_ENABLED)
-                should_exec, agg_trade = aggregate_trade(trade, config)
-                if not should_exec:
-                    log_event('ENGINE', 'INFO', f'Buffered trade for aggregation: {market_title[:40]}')
-                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
-                    config[ts_key] = trade['timestamp']
-                    save_config(config)
-                    continue
-                if agg_trade:
-                    agg_count = agg_trade.get('_aggregated_count', 1)
-                    if agg_count > 1:
-                        log_event('ENGINE', 'INFO', f'Executing aggregated trade ({agg_count} trades combined)')
-                        trade_size = float(agg_trade.get('usdc_size') or 0)
-                        trade = agg_trade  # Use the aggregated trade
 
                 # In mock mode, if this is a SELL, try to close matching OPEN BUY positions first
                 if mock_mode and side_str == 'SELL' and trade.get('condition_id'):
@@ -1671,22 +1566,7 @@ def get_config():
         'fixed_trade_size': config.get('fixed_trade_size', 10),
         'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
         'max_trades_per_event': config.get('max_trades_per_event', 0),
-        # Frontrunning / Mempool settings (from repo)
-        'frontrun_enabled': config.get('frontrun_enabled', DEFAULT_FRONTRUN_CONFIG['frontrun_enabled']),
-        'frontrun_size_multiplier': config.get('frontrun_size_multiplier', DEFAULT_FRONTRUN_CONFIG['frontrun_size_multiplier']),
-        'gas_price_multiplier': config.get('gas_price_multiplier', DEFAULT_FRONTRUN_CONFIG['gas_price_multiplier']),
-        'min_trade_size_usd': config.get('min_trade_size_usd', DEFAULT_FRONTRUN_CONFIG['min_trade_size_usd']),
-        'retry_limit': config.get('retry_limit', DEFAULT_FRONTRUN_CONFIG['retry_limit']),
-        'fetch_interval': config.get('fetch_interval', DEFAULT_FRONTRUN_CONFIG['fetch_interval']),
-        'trade_aggregation_enabled': config.get('trade_aggregation_enabled', DEFAULT_FRONTRUN_CONFIG['trade_aggregation_enabled']),
-        'trade_aggregation_window_seconds': config.get('trade_aggregation_window_seconds', DEFAULT_FRONTRUN_CONFIG['trade_aggregation_window_seconds']),
-        'target_addresses': config.get('target_addresses', ''),
-        # Mempool monitor status
-        'mempool_running': mempool_monitor['running'],
-        'mempool_pending_seen': mempool_monitor['pending_txns_seen'],
-        'mempool_frontrun_attempts': mempool_monitor['frontrun_attempts'],
-        'mempool_frontrun_successes': mempool_monitor['frontrun_successes'],
-        # Current gas price
+        'retry_limit': config.get('retry_limit', 3),
         'current_gas_gwei': round(get_gas_price(), 1),
     }
     return jsonify(safe)
@@ -1722,30 +1602,8 @@ def update_config():
     if 'max_trades_per_event' in data:
         config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
         log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
-    # Frontrunning / Mempool settings (from repo)
-    if 'frontrun_enabled' in data:
-        config['frontrun_enabled'] = bool(data['frontrun_enabled'])
-        log_event('APP', 'INFO', f'Frontrun mode {"enabled" if data["frontrun_enabled"] else "disabled"}')
-    if 'frontrun_size_multiplier' in data:
-        config['frontrun_size_multiplier'] = max(0.01, min(2.0, float(data['frontrun_size_multiplier'])))
-    if 'gas_price_multiplier' in data:
-        config['gas_price_multiplier'] = max(1.0, min(5.0, float(data['gas_price_multiplier'])))
-        log_event('APP', 'INFO', f'Gas price multiplier set to {config["gas_price_multiplier"]}x')
-    if 'min_trade_size_usd' in data:
-        config['min_trade_size_usd'] = max(0, float(data['min_trade_size_usd']))
     if 'retry_limit' in data:
         config['retry_limit'] = max(0, min(10, int(data['retry_limit'])))
-    if 'fetch_interval' in data:
-        config['fetch_interval'] = max(0.5, min(60, float(data['fetch_interval'])))
-    if 'trade_aggregation_enabled' in data:
-        config['trade_aggregation_enabled'] = bool(data['trade_aggregation_enabled'])
-        log_event('APP', 'INFO', f'Trade aggregation {"enabled" if data["trade_aggregation_enabled"] else "disabled"}')
-    if 'trade_aggregation_window_seconds' in data:
-        config['trade_aggregation_window_seconds'] = max(10, min(3600, int(data['trade_aggregation_window_seconds'])))
-    if 'target_addresses' in data:
-        config['target_addresses'] = data['target_addresses'].strip()
-        addr_count = len([a for a in config['target_addresses'].split(',') if a.strip()]) if config['target_addresses'] else 0
-        log_event('APP', 'INFO', f'Target addresses updated: {addr_count} address(es)')
     save_config(config)
     return jsonify({'success': True})
 
@@ -1850,17 +1708,9 @@ def simulate_trade():
     tier_size = round(our_size * tier.get('size_multiplier', 1.0), 2)
     tier_size = min(tier_size, config.get('max_trade_size', 100))
 
-    # Frontrun calculation
-    frontrun_size = 0
-    if config.get('frontrun_enabled', False):
-        frontrun_mult = config.get('frontrun_size_multiplier', 0.5)
-        frontrun_size = round(trade_size_usd * frontrun_mult, 2)
-
     # Gas cost estimate
     gas_price = get_gas_price()
-    gas_mult = config.get('gas_price_multiplier', 1.2)
-    priority_gas = gas_price * gas_mult
-    est_gas_cost = priority_gas * 200000 / 1e9  # ~200k gas units for a trade
+    est_gas_cost = gas_price * 200000 / 1e9  # ~200k gas units for a trade
 
     # Balance check
     is_valid, usdc_bal, pol_bal, bal_msg = validate_balances(config)
@@ -1877,22 +1727,17 @@ def simulate_trade():
         'tier': tier.get('label', '?'),
         'tier_multiplier': tier.get('size_multiplier', 1.0),
         'final_copy_size': tier_size,
-        'frontrun_enabled': config.get('frontrun_enabled', False),
-        'frontrun_size': frontrun_size,
         'gas_price_gwei': round(gas_price, 1),
-        'priority_gas_gwei': round(priority_gas, 1),
         'estimated_gas_cost_pol': round(est_gas_cost, 6),
         'balance_valid': is_valid,
         'usdc_balance': round(usdc_bal, 2),
         'pol_balance': round(pol_bal, 4),
         'balance_message': bal_msg,
         'would_execute': is_valid and tier_size >= config.get('min_trade_size', 1),
-        'retry_limit': config.get('retry_limit', 3),
-        'aggregation_enabled': config.get('trade_aggregation_enabled', False),
     }
 
     log_event('APP', 'INFO', f'Simulation: {side} ${trade_size_usd} -> copy ${tier_size} [{tier.get("label")}]',
-              f'Strategy: {result["strategy"]} | Frontrun: {frontrun_size}')
+              f'Strategy: {result["strategy"]}')
 
     return jsonify(result)
 
@@ -1937,25 +1782,6 @@ def manual_sell():
     except Exception as e:
         log_event('ENGINE', 'FAILED', f'Manual sell failed: {token_id[:20]}', str(e))
         return jsonify({'error': str(e)}), 500
-
-
-@app.route('/api/mempool/status', methods=['GET'])
-def mempool_status():
-    """Get mempool monitor status and stats."""
-    config = load_config()
-    target_addrs = config.get('target_addresses', '')
-    addr_list = [a.strip() for a in target_addrs.split(',') if a.strip()] if target_addrs else []
-    return jsonify({
-        'running': mempool_monitor['running'],
-        'pending_txns_seen': mempool_monitor['pending_txns_seen'],
-        'frontrun_attempts': mempool_monitor['frontrun_attempts'],
-        'frontrun_successes': mempool_monitor['frontrun_successes'],
-        'last_pending_tx': mempool_monitor['last_pending_tx'],
-        'target_addresses': addr_list,
-        'target_count': len(addr_list),
-        'rpc_mode': True,
-        'frontrun_enabled': config.get('frontrun_enabled', False),
-    })
 
 
 @app.route('/api/copy-trades', methods=['GET'])
@@ -2290,12 +2116,6 @@ if __name__ == '__main__':
     print("  Dashboard: http://localhost:5000")
     print(f"  Fetcher: Data API + Polygon RPC (polygon-rpc.com)")
     print(f"  CLOB client: {'Available' if CLOB_AVAILABLE else 'Not installed (mock only)'}")
-    config = load_config()
-    print(f"  Frontrunning: {'Enabled' if config.get('frontrun_enabled') else 'Disabled'}")
-    target_addrs = config.get('target_addresses', '')
-    addr_count = len([a for a in target_addrs.split(',') if a.strip()]) if target_addrs else 0
-    print(f"  Target addresses: {addr_count}")
-    print(f"  Gas multiplier: {config.get('gas_price_multiplier', 1.2)}x")
     print("  Copy engine running in background")
     print("=" * 60)
     app.run(debug=False, port=5000, threaded=True)
