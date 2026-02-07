@@ -127,7 +127,7 @@
         .log-level.INFO { color:var(--accent); } .log-level.SUCCESS,.log-level.WIN { color:var(--green); }
         .log-level.ERROR,.log-level.FAILED,.log-level.LOSS { color:var(--red); } .log-level.WARN { color:var(--yellow); }
         .log-level.COPY { color:#c084fc; } .log-level.SKIP { color:var(--text-dim); } .log-level.TRADE { color:var(--cyan); }
-        .log-src.APP { color:var(--accent); } .log-src.ENGINE { color:#c084fc; } .log-src.FETCHER { color:var(--cyan); } .log-src.TRADER { color:var(--orange); }
+        .log-src.APP { color:var(--accent); } .log-src.ENGINE { color:#c084fc; } .log-src.FETCHER { color:var(--cyan); }
         .log-filter-bar { display:flex; gap:4px; margin-bottom:10px; }
         .log-filter-btn { padding:4px 10px; font-size:11px; background:var(--bg-input); border:1px solid var(--border); border-radius:5px; color:var(--text-dim); cursor:pointer; transition:all .15s; font-weight:500; }
         .log-filter-btn:hover,.log-filter-btn.active { border-color:var(--accent); color:var(--accent); }
@@ -417,7 +417,7 @@
                     <button class="log-filter-btn" data-src="APP" onclick="filterLogs('APP')">App</button>
                     <button class="log-filter-btn" data-src="ENGINE" onclick="filterLogs('ENGINE')">Engine</button>
                     <button class="log-filter-btn" data-src="FETCHER" onclick="filterLogs('FETCHER')">Fetcher</button>
-                    <button class="log-filter-btn" data-src="TRADER" onclick="filterLogs('TRADER')">Copy Trader</button>
+    
                 </div>
                 <div class="log-panel" id="log-panel" style="max-height:calc(100vh - 200px);"><div class="empty-state"><p>No log entries yet</p></div></div>
             </div>
@@ -448,17 +448,12 @@
             const cb=t.copy_trading_enabled?'<span class="badge badge-copy">COPY</span>':'';
             const wr=t.win_rate||0;
             const wrHtml=wr>0?`<span style="color:${wrColor(wr)};font-size:10px;font-weight:600;">${wr}% WR</span>`:'';
-            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="btn btn-sm btn-outline" style="padding:2px 6px;font-size:9px;margin-right:4px;" onclick="event.stopPropagation();fetchTraderTrades(${t.id})" title="Refresh trades">Fetch</button><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
+            return `<div class="trader-item ${selectedTraderId===t.id?'active':''}" onclick="selectTrader(${t.id})"><div class="trader-avatar">${av}</div><div class="trader-meta"><div class="name">${name} ${t.verified_badge?'<span class="badge-verified">&#10003;</span>':''} ${cb}</div><div class="addr">${truncAddr(t.wallet_address)} ${wrHtml}</div></div><button class="remove-btn" onclick="event.stopPropagation();deleteTrader(${t.id})" title="Remove">&times;</button></div>`;
         }).join('');
     }
     async function addTrader() { const v=document.getElementById('wallet-input').value.trim(); if(!v){showToast('Enter a wallet','error');return;} try{const r=await fetch('/api/traders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wallet_address:v})}); const res=await r.json(); if(r.ok){showToast('Wallet added - fetching trades...','success');document.getElementById('wallet-input').value='';fetchTraders();fetchStats();setTimeout(()=>{fetchTrades();fetchTraders();},3000);setTimeout(()=>{fetchTrades();fetchTraders();},8000);}else showToast(res.error,'error');}catch(e){showToast('Error','error');} }
     async function deleteTrader(id) { if(!confirm('Remove this trader?'))return; try{await fetch('/api/traders/'+id,{method:'DELETE'}); if(selectedTraderId===id){selectedTraderId=null;document.getElementById('target-detail').style.display='none';} showToast('Removed','success'); fetchTraders();fetchTrades();fetchStats();}catch(e){} }
-    async function fetchTraderTrades(id) {
-        showToast('Fetching trades...','info');
-        try{const r=await fetch('/api/traders/'+id+'/fetch',{method:'POST'}); const res=await r.json();
-        if(r.ok){showToast('Fetch started - trades will appear shortly','success'); setTimeout(()=>{fetchTrades();fetchTraders();},3000);}
-        else showToast(res.error||'Error','error');}catch(e){showToast('Fetch error','error');}
-    }
+
     document.getElementById('wallet-input').addEventListener('keypress',e=>{if(e.key==='Enter')addTrader();});
 
     function selectTrader(id) { if(selectedTraderId===id){selectedTraderId=null;document.getElementById('target-detail').style.display='none';}else{selectedTraderId=id;fetchTraderDetails(id);} fetchTraders();fetchTrades(); }

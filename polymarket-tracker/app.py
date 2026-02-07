@@ -1,10 +1,10 @@
 """
 Polymarket Copy Trader - Flask Web Application
 Integrated copy trading engine with MOCK MODE for testing.
-Unified log system for app.py, fetcher.py, copy_trader.py.
+Unified log system for app.py and fetcher.py.
 """
 from flask import Flask, render_template, jsonify, request, Response
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 import json
 import time
@@ -214,7 +214,7 @@ def save_config(config):
 
 
 def log_event(source, level, message, details=''):
-    """Unified log: source is 'APP', 'ENGINE', 'FETCHER', or 'TRADER'"""
+    """Unified log: source is 'APP', 'ENGINE', or 'FETCHER'"""
     try:
         with get_write_conn() as conn:
             conn.execute(
@@ -760,6 +760,32 @@ def copy_trading_loop():
                         config[ts_key] = trade['timestamp']
                         save_config(config)
                         continue
+
+                # Skip BUY trades for events that have already started
+                # (only open new positions before the event begins)
+                if side_str == 'BUY' and trade.get('condition_id'):
+                    try:
+                        meta = get_market_metadata(trade['condition_id'])
+                        if meta:
+                            event_start = meta.get('event_start_time', '')
+                            if event_start:
+                                # Parse ISO 8601 timestamp (handle Z suffix and timezone offsets)
+                                es = event_start.replace('Z', '+00:00')
+                                start_dt = datetime.fromisoformat(es)
+                                now_utc = datetime.now(timezone.utc)
+                                # Make start_dt offset-aware if it isn't already
+                                if start_dt.tzinfo is None:
+                                    start_dt = start_dt.replace(tzinfo=timezone.utc)
+                                if now_utc > start_dt:
+                                    log_event('ENGINE', 'SKIP',
+                                              f'Event already started, skipping BUY',
+                                              f'{trade.get("title", "")[:50]} | started {event_start}')
+                                    ts_key = 'last_mock_processed_timestamp' if mock_mode else 'last_processed_timestamp'
+                                    config[ts_key] = trade['timestamp']
+                                    save_config(config)
+                                    continue
+                    except Exception:
+                        pass  # If we can't determine start time, allow the trade
 
                 # In mock mode, allow smaller trades for testing
                 effective_min = 0.01 if mock_mode else min_size
@@ -1361,34 +1387,7 @@ def add_trader():
     return jsonify({'success': True, 'trader_id': tid})
 
 
-@app.route('/api/traders/<int:trader_id>/fetch', methods=['POST'])
-def fetch_trader_trades(trader_id):
-    """Manually trigger a trade fetch for a specific trader."""
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('SELECT wallet_address FROM traders WHERE id = ?', (trader_id,))
-    row = cursor.fetchone()
-    conn.close()
-    if not row:
-        return jsonify({'error': 'Trader not found'}), 404
 
-    wallet = row['wallet_address']
-
-    def _bg():
-        try:
-            c = get_db()
-            if FETCHER_AVAILABLE:
-                total_new = fetcher_fetch(trader_id, wallet, c, limit=100)
-            else:
-                total_new = 0
-            c.close()
-            if total_new:
-                log_event('APP', 'INFO', f'Manual fetch: {total_new} new trade(s) for {wallet[:10]}...')
-        except Exception as e:
-            log_event('APP', 'ERROR', f'Manual fetch failed', str(e))
-
-    threading.Thread(target=_bg, daemon=True).start()
-    return jsonify({'success': True, 'message': 'Fetch started in background'})
 
 
 @app.route('/api/traders/<int:trader_id>', methods=['DELETE'])
@@ -2018,7 +2017,7 @@ def get_market_cache_stats():
 def get_logs():
     """Unified log endpoint for all sources"""
     limit = request.args.get('limit', 200, type=int)
-    source = request.args.get('source', '')  # APP, ENGINE, FETCHER, TRADER, or '' for all
+    source = request.args.get('source', '')  # APP, ENGINE, FETCHER, or '' for all
     since_id = request.args.get('since_id', 0, type=int)
     conn = get_db()
     cursor = conn.cursor()
