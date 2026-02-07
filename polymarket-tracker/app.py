@@ -79,38 +79,12 @@ def calculate_copy_size(trade_size_usd, config, side='BUY'):
         copy_pct = config.get('copy_percentage', 10)
         our_size = trade_size_usd * (copy_pct / 100)
 
-    # Probability-based sizing (from Rust: ENABLE_PROB_SIZING)
-    if config.get('prob_sizing_enabled', False):
-        # If price is available, adjust size based on implied probability
-        # Lower probability = potentially higher payout, increase size slightly
-        pass  # Applied at trade-level with price info
-
     our_size = min(our_size, max_size)
     our_size = max(our_size, 0)
 
     return round(our_size, 2)
 
 
-def apply_prob_sizing(our_size, price, config):
-    """
-    Probability-based position sizing (from Rust ENABLE_PROB_SIZING).
-    Adjusts size based on implied probability of the outcome.
-    """
-    if not config.get('prob_sizing_enabled', False) or not price:
-        return our_size
-
-    price = float(price)
-    if price <= 0 or price >= 1:
-        return our_size
-
-    # Kelly-inspired: slight boost for mid-range probabilities (30-70%)
-    # Reduce for extreme probs (>90% or <10%) as they have less edge
-    if 0.3 <= price <= 0.7:
-        factor = 1.1  # 10% boost for mid-range
-    elif price < 0.1 or price > 0.9:
-        factor = 0.7  # 30% reduction for extremes
-    else:
-        factor = 1.0
 
     return round(our_size * factor, 2)
 
@@ -583,8 +557,8 @@ def execute_mock_trade(trade, config):
     # Use strategy-based sizing
     our_size = calculate_copy_size(original_size, config, side_str)
 
-    # Apply probability sizing
-    our_size = apply_prob_sizing(our_size, trade.get('price'), config)
+
+
 
     # In mock mode, always set a minimum mock size for testing
     if our_size < 0.01:
@@ -610,7 +584,6 @@ def execute_live_trade(client, trade, config):
 
         # Strategy-based sizing
         our_size = calculate_copy_size(original_size, config, side_str)
-        our_size = apply_prob_sizing(our_size, trade.get('price'), config)
 
         if our_size < 1:
             return False, 'Size too small', 0
@@ -1683,7 +1656,7 @@ def get_config():
         # Strategy settings
         'copy_strategy': config.get('copy_strategy', 'PERCENTAGE'),
         'fixed_trade_size': config.get('fixed_trade_size', 10),
-        'prob_sizing_enabled': config.get('prob_sizing_enabled', False),
+
         'max_trades_per_event': config.get('max_trades_per_event', 0),
         'retry_limit': config.get('retry_limit', 3),
         'current_gas_gwei': round(get_gas_price(), 1),
@@ -1836,7 +1809,6 @@ def simulate_trade():
 
     # Calculate copy size using current strategy
     our_size = calculate_copy_size(trade_size_usd, config, side)
-    our_size = apply_prob_sizing(our_size, price, config)
 
     # Get tier info
     tier = get_exec_tier(trade_size_usd, side)
