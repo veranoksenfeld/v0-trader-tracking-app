@@ -424,6 +424,7 @@ def init_db():
             ('result', 'TEXT', "'OPEN'"),
             ('mock', 'INTEGER', '0'),
             ('end_date', 'TEXT', 'NULL'),
+            ('close_reason', 'TEXT', 'NULL'),
         ]),
     ]:
         cursor.execute(f"PRAGMA table_info({table})")
@@ -810,7 +811,7 @@ def copy_trading_loop():
                                 pnl_pct = (pnl / op_size * 100) if op_size > 0 else 0
                                 actual_result = 'WIN' if pnl >= 0 else 'LOSS'
                                 c_close.execute('''
-                                    UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+                                    UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?, close_reason = 'SELL'
                                     WHERE id = ?
                                 ''', (datetime.now().isoformat(), actual_result, sell_price, round(pnl, 4), round(pnl_pct, 2), op['id']))
                                 log_event('ENGINE', actual_result, f'[MOCK] Auto-closed position: {market_title[:50]}',
@@ -868,6 +869,12 @@ def copy_trading_loop():
                 refresh_all_win_rates()
             if market_cache.needs_refresh():
                 market_cache.populate_from_trades()
+
+            # Check Take-Profit / Stop-Loss thresholds on open positions
+            try:
+                check_tp_sl()
+            except Exception as tpsl_err:
+                log_event('ENGINE', 'WARN', 'TP/SL check error', str(tpsl_err))
 
         except Exception as e:
             log_event('ENGINE', 'ERROR', 'Engine error', str(e))
@@ -1099,7 +1106,7 @@ def check_resolved_markets():
 
                 cursor.execute('''
                     UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?,
-                    current_price = ?, pnl = ?, pnl_pct = ?
+                    current_price = ?, pnl = ?, pnl_pct = ?, close_reason = 'RESOLVED'
                     WHERE id = ?
                 ''', (datetime.now().isoformat(), actual_result, final_price,
                       round(pnl, 4), round(pnl_pct, 2), trade['id']))
@@ -1114,6 +1121,119 @@ def check_resolved_markets():
 
         except Exception as e:
             log_event('ENGINE', 'WARN', f'Resolution check error for {cid[:20]}', str(e))
+
+
+def check_tp_sl():
+    """
+    Check all OPEN copy-trade positions against Take-Profit / Stop-Loss thresholds.
+    Uses live outcome prices from Gamma API to calculate unrealised PnL %.
+    Positions that hit the TP or SL threshold are auto-closed.
+    """
+    config = load_config()
+    tp_enabled = config.get('tp_enabled', False)
+    sl_enabled = config.get('sl_enabled', False)
+    if not tp_enabled and not sl_enabled:
+        return
+
+    tp_pct = float(config.get('tp_percent', 20))
+    sl_pct = float(config.get('sl_percent', 15))
+
+    # Get all OPEN positions with a condition_id
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT id, condition_id, outcome, side, price, our_size
+            FROM copy_trades
+            WHERE result = 'OPEN' AND status = 'SUCCESS'
+            AND condition_id IS NOT NULL AND condition_id != ''
+        ''')
+        open_trades = [dict(r) for r in cursor.fetchall()]
+
+    if not open_trades:
+        return
+
+    # Group by condition_id to batch API calls
+    cid_trades = {}
+    for t in open_trades:
+        cid = t['condition_id']
+        if cid not in cid_trades:
+            cid_trades[cid] = []
+        cid_trades[cid].append(t)
+
+    closed_count = 0
+    for cid, trades in cid_trades.items():
+        # Evict cached metadata so we get fresh live prices from Gamma API
+        _market_metadata_cache.pop(cid, None)
+        meta = get_market_metadata(cid)
+        if not meta or not meta.get('outcome_prices'):
+            continue
+
+        outcomes = meta.get('outcomes', [])
+        outcome_prices = meta.get('outcome_prices', [])
+
+        # Build outcome -> current price map
+        price_map = {}
+        for i, oc in enumerate(outcomes):
+            if i < len(outcome_prices):
+                price_map[oc.lower()] = float(outcome_prices[i])
+
+        for t in trades:
+            entry_price = float(t.get('price') or 0)
+            if entry_price <= 0:
+                continue
+
+            trade_outcome = (t.get('outcome') or '').lower()
+            side = (t.get('side') or '').upper()
+
+            current_price = price_map.get(trade_outcome)
+            if current_price is None:
+                continue
+
+            # Calculate PnL %
+            if side == 'BUY':
+                pnl_pct = ((current_price - entry_price) / entry_price) * 100
+            else:
+                pnl_pct = ((entry_price - current_price) / entry_price) * 100
+
+            our_size = float(t.get('our_size') or 0)
+            pnl_abs = (current_price - entry_price) * our_size if side == 'BUY' else (entry_price - current_price) * our_size
+
+            close_reason = None
+            result_label = None
+
+            # Check Take Profit
+            if tp_enabled and pnl_pct >= tp_pct:
+                close_reason = 'TP'
+                result_label = 'WIN'
+
+            # Check Stop Loss
+            if sl_enabled and pnl_pct <= -sl_pct:
+                close_reason = 'SL'
+                result_label = 'LOSS'
+
+            if close_reason and result_label:
+                with get_write_conn() as conn:
+                    conn.execute('''
+                        UPDATE copy_trades
+                        SET closed = 1, closed_at = ?, result = ?,
+                            current_price = ?, pnl = ?, pnl_pct = ?,
+                            close_reason = ?
+                        WHERE id = ?
+                    ''', (
+                        datetime.now().isoformat(), result_label,
+                        round(current_price, 4), round(pnl_abs, 4), round(pnl_pct, 2),
+                        close_reason, t['id']
+                    ))
+
+                log_event('ENGINE', close_reason,
+                          f'[{close_reason}] Auto-closed trade #{t["id"]}: {result_label}',
+                          f'Entry: {entry_price:.4f} Current: {current_price:.4f} PnL: {pnl_pct:+.1f}% (${pnl_abs:+.2f})')
+                closed_count += 1
+
+        time.sleep(0.3)  # Rate-limit Gamma API
+
+    if closed_count > 0:
+        log_event('ENGINE', 'INFO', f'TP/SL check closed {closed_count} position(s)')
 
 
 def backfill_end_dates():
@@ -1568,6 +1688,11 @@ def get_config():
         'max_trades_per_event': config.get('max_trades_per_event', 0),
         'retry_limit': config.get('retry_limit', 3),
         'current_gas_gwei': round(get_gas_price(), 1),
+        # Take-Profit / Stop-Loss
+        'tp_enabled': config.get('tp_enabled', False),
+        'tp_percent': config.get('tp_percent', 20),
+        'sl_enabled': config.get('sl_enabled', False),
+        'sl_percent': config.get('sl_percent', 15),
     }
     return jsonify(safe)
 
@@ -1604,6 +1729,19 @@ def update_config():
         log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
     if 'retry_limit' in data:
         config['retry_limit'] = max(0, min(10, int(data['retry_limit'])))
+    # Take-Profit / Stop-Loss
+    if 'tp_enabled' in data:
+        config['tp_enabled'] = bool(data['tp_enabled'])
+        log_event('APP', 'INFO', f'Take-Profit {"enabled" if data["tp_enabled"] else "disabled"}')
+    if 'tp_percent' in data:
+        config['tp_percent'] = max(1, min(500, float(data['tp_percent'])))
+        log_event('APP', 'INFO', f'Take-Profit set to {config["tp_percent"]}%')
+    if 'sl_enabled' in data:
+        config['sl_enabled'] = bool(data['sl_enabled'])
+        log_event('APP', 'INFO', f'Stop-Loss {"enabled" if data["sl_enabled"] else "disabled"}')
+    if 'sl_percent' in data:
+        config['sl_percent'] = max(1, min(100, float(data['sl_percent'])))
+        log_event('APP', 'INFO', f'Stop-Loss set to {config["sl_percent"]}%')
     save_config(config)
     return jsonify({'success': True})
 
@@ -1861,7 +1999,7 @@ def close_copy_trade(trade_id):
     actual_result = 'WIN' if pnl >= 0 else 'LOSS'
 
     cursor.execute('''
-        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?
+        UPDATE copy_trades SET closed = 1, closed_at = ?, result = ?, current_price = ?, pnl = ?, pnl_pct = ?, close_reason = 'MANUAL'
         WHERE id = ?
     ''', (datetime.now().isoformat(), actual_result, current_price, round(pnl, 4), round(pnl_pct, 2), trade_id))
     conn.commit()
