@@ -85,10 +85,6 @@ def calculate_copy_size(trade_size_usd, config, side='BUY'):
     return round(our_size, 2)
 
 
-
-    return round(our_size * factor, 2)
-
-
 # ============================================
 #  MARKET CACHE (from Rust markets/market_cache.rs)
 # ============================================
@@ -1694,8 +1690,6 @@ def update_config():
         log_event('APP', 'INFO', f'Copy strategy set to {data["copy_strategy"]}')
     if 'fixed_trade_size' in data:
         config['fixed_trade_size'] = max(0.1, float(data['fixed_trade_size']))
-    if 'prob_sizing_enabled' in data:
-        config['prob_sizing_enabled'] = bool(data['prob_sizing_enabled'])
     if 'max_trades_per_event' in data:
         config['max_trades_per_event'] = max(0, int(data['max_trades_per_event']))
         log_event('APP', 'INFO', f'Max trades per event set to {config["max_trades_per_event"]}')
@@ -1895,14 +1889,55 @@ def manual_sell():
 
 @app.route('/api/copy-trades', methods=['GET'])
 def get_copy_trades():
-    conn = get_db()
-    cursor = conn.cursor()
-    try:
-        cursor.execute('SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 100')
-        trades = [dict(row) for row in cursor.fetchall()]
-    except Exception:
-        trades = []
-    conn.close()
+    with get_conn() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT * FROM copy_trades ORDER BY executed_at DESC LIMIT 100')
+            trades = [dict(row) for row in cursor.fetchall()]
+        except Exception:
+            trades = []
+
+    # Enrich OPEN trades with live current_price and computed PnL
+    cid_prices = {}  # cache per condition_id
+    for t in trades:
+        entry_price = float(t.get('price') or 0)
+        side = (t.get('side') or '').upper()
+        cid = t.get('condition_id') or ''
+        outcome = (t.get('outcome') or '').lower()
+
+        # For closed trades that already have pnl, keep as-is
+        if t.get('result') in ('WIN', 'LOSS') and t.get('pnl') is not None:
+            continue
+
+        # For OPEN trades, fetch live price and compute unrealised PnL
+        if cid and entry_price > 0 and t.get('result') == 'OPEN':
+            if cid not in cid_prices:
+                try:
+                    meta = get_market_metadata(cid)
+                    if meta and meta.get('outcome_prices') and meta.get('outcomes'):
+                        pm = {}
+                        for i, oc in enumerate(meta['outcomes']):
+                            if i < len(meta['outcome_prices']):
+                                pm[oc.lower()] = float(meta['outcome_prices'][i])
+                        cid_prices[cid] = pm
+                    else:
+                        cid_prices[cid] = {}
+                except Exception:
+                    cid_prices[cid] = {}
+
+            cur_price = cid_prices.get(cid, {}).get(outcome)
+            if cur_price is not None:
+                t['current_price'] = round(cur_price, 4)
+                our_size = float(t.get('our_size') or 0)
+                if side == 'BUY':
+                    pnl_abs = (cur_price - entry_price) * our_size
+                    pnl_pct = ((cur_price - entry_price) / entry_price) * 100 if entry_price > 0 else 0
+                else:
+                    pnl_abs = (entry_price - cur_price) * our_size
+                    pnl_pct = ((entry_price - cur_price) / entry_price) * 100 if entry_price > 0 else 0
+                t['pnl'] = round(pnl_abs, 4)
+                t['pnl_pct'] = round(pnl_pct, 2)
+
     return jsonify(trades)
 
 

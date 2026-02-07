@@ -465,27 +465,30 @@ def _fetch_trades_api(address, limit=100):
     return []
 
 
-def insert_trade_from_trades_api(trader_id, trade, conn):
-    """Insert a trade from Polymarket /trades API format. Returns True if new."""
+def insert_trade_from_trades_api(trader_id, trade, conn=None):
+    """Insert a trade from Polymarket /trades API format. Returns True if new.
+    Uses its own write connection to avoid holding caller's conn across writes."""
     tx_hash = trade.get('transactionHash')
     if not tx_hash:
         return False
-    with _db_write_lock:
-        cursor = conn.cursor()
-        cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
-        if cursor.fetchone():
+
+    # Quick read check: does this trade already exist?
+    with get_conn() as rc:
+        cur = rc.cursor()
+        cur.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
+        if cur.fetchone():
             return False
 
-        side_raw = (trade.get('side') or '').upper()
-        direction = 'OPEN' if side_raw == 'BUY' else 'CLOSE'
-        cid = trade.get('conditionId') or ''
-        # Calculate usdcSize from size * price (trades endpoint doesn't always have usdcSize)
-        size = trade.get('size') or 0
-        price = trade.get('price') or 0
-        usdc_size = float(size) * float(price) if size and price else 0
+    side_raw = (trade.get('side') or '').upper()
+    direction = 'OPEN' if side_raw == 'BUY' else 'CLOSE'
+    cid = trade.get('conditionId') or ''
+    size = trade.get('size') or 0
+    price = trade.get('price') or 0
+    usdc_size = float(size) * float(price) if size and price else 0
 
-        cursor.execute('''
-            INSERT INTO trades (
+    with get_write_conn() as wc:
+        wc.execute('''
+            INSERT OR IGNORE INTO trades (
                 trader_id, transaction_hash, side, size, price, usdc_size,
                 timestamp, title, slug, icon, event_slug, outcome,
                 outcome_index, condition_id, asset, direction, end_date
@@ -498,7 +501,6 @@ def insert_trade_from_trades_api(trader_id, trade, conn):
             trade.get('outcomeIndex'), cid,
             trade.get('asset'), direction, ''
         ))
-        conn.commit()
     return True
 
 
@@ -509,24 +511,28 @@ def fetch_end_date_for_condition(condition_id):
     return info.get('end_date', '') if info else ''
 
 
-def insert_trade_from_activity(trader_id, trade, conn):
-    """Insert a trade from Polymarket Activity API format. Returns True if new."""
+def insert_trade_from_activity(trader_id, trade, conn=None):
+    """Insert a trade from Polymarket Activity API format. Returns True if new.
+    Uses its own write connection to avoid holding caller's conn across writes."""
     tx_hash = trade.get('transactionHash')
     if not tx_hash:
         return False
-    with _db_write_lock:
-        cursor = conn.cursor()
-        cursor.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
-        if cursor.fetchone():
+
+    # Quick read check
+    with get_conn() as rc:
+        cur = rc.cursor()
+        cur.execute('SELECT id FROM trades WHERE transaction_hash = ?', (tx_hash,))
+        if cur.fetchone():
             return False
 
-        side_raw = (trade.get('side') or '').upper()
-        direction = 'OPEN' if side_raw == 'BUY' else 'CLOSE'
-        cid = trade.get('conditionId') or ''
-        end_date = fetch_end_date_for_condition(cid)
+    side_raw = (trade.get('side') or '').upper()
+    direction = 'OPEN' if side_raw == 'BUY' else 'CLOSE'
+    cid = trade.get('conditionId') or ''
+    end_date = fetch_end_date_for_condition(cid)
 
-        cursor.execute('''
-            INSERT INTO trades (
+    with get_write_conn() as wc:
+        wc.execute('''
+            INSERT OR IGNORE INTO trades (
                 trader_id, transaction_hash, side, size, price, usdc_size,
                 timestamp, title, slug, icon, event_slug, outcome,
                 outcome_index, condition_id, asset, direction, end_date
@@ -540,7 +546,6 @@ def insert_trade_from_activity(trader_id, trade, conn):
             trade.get('outcomeIndex'), cid,
             trade.get('asset'), direction, end_date
         ))
-        conn.commit()
     return True
 
 

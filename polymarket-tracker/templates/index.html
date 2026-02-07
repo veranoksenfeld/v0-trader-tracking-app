@@ -275,7 +275,6 @@
                         <div class="status-row"><span class="label">Max Trades in Event</span><span class="value"><input class="config-input" id="max-per-event-input" type="number" min="0" value="0" onchange="updateMaxPerEvent()"><span style="color:var(--text-dim);font-size:11px;margin-left:4px;">0 = unlimited</span></span></div>
                         <div class="status-row"><span class="label">Trades Copied</span><span class="value" style="color:var(--green);" id="engine-copied">0</span></div>
                         <div class="status-row"><span class="label">Failed</span><span class="value" style="color:var(--red);" id="engine-failed">0</span></div>
-                        <div class="status-row"><span class="label">Prob Sizing</span><span class="value"><div class="toggle" id="prob-toggle" onclick="toggleProbSizing()" style="width:36px;height:20px;"></div></span></div>
                         <div class="status-row"><span class="label">Last Check</span><span class="value" style="font-size:11px;color:var(--text-dim);" id="last-check">--</span></div>
                     </div>
                 </div>
@@ -343,8 +342,6 @@
                         <div class="stat-card"><div class="val" id="ts-avgbuy">0c</div><div class="lbl">Avg Buy</div></div>
                         <div class="stat-card"><div class="val" id="ts-avgsell">0c</div><div class="lbl">Avg Sell</div></div>
                     </div>
-                    <div class="toggle-row"><div class="info"><h4>Copy This Trader</h4><p>Mirror their buys and sells</p></div><div class="toggle" id="trader-copy-toggle" onclick="toggleTraderCopy()"></div></div>
-
                     <!-- Positions & Activity Tabs (Polymarket Wallet style) -->
                     <div style="margin-top:16px;">
                         <div class="filter-buttons" style="margin-bottom:12px;">
@@ -471,7 +468,7 @@
         document.getElementById('target-poly-link').href='https://polymarket.com/profile/'+t.wallet_address;
         document.getElementById('target-scan-link').href='https://polygonscan.com/address/'+t.wallet_address;
         document.getElementById('target-wallet').textContent=t.wallet_address;
-        document.getElementById('trader-copy-toggle').classList.toggle('active',!!t.copy_trading_enabled);
+
         const wr=t.stats?.win_rate||t.win_rate||0;
         const ring=document.getElementById('target-winrate-ring');
         ring.textContent=wr+'%'; ring.style.color=wrColor(wr); ring.style.border=`3px solid ${wrColor(wr)}`;
@@ -558,16 +555,12 @@
     function copyAddr() { if(currentDetail)navigator.clipboard.writeText(currentDetail.wallet_address).then(()=>showToast('Copied!','success')); }
 
     // ---- Toggles ----
-    async function toggleTraderCopy() { if(!currentDetail)return; const n=!currentDetail.copy_trading_enabled; try{const r=await fetch('/api/traders/'+currentDetail.id+'/copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:n})}); if(r.ok){currentDetail.copy_trading_enabled=n;document.getElementById('trader-copy-toggle').classList.toggle('active',n);showToast(n?'Copy enabled':'Copy disabled',n?'success':'info');fetchTraders();}}catch(e){} }
     async function toggleMock() {
         const current=!!config.mock_mode, next=!current;
         try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mock_mode:next})}); if(r.ok){config.mock_mode=next;document.getElementById('mock-toggle').classList.toggle('active',next);updateMockUI();showToast(next?'Mock mode ON':'Mock mode OFF - LIVE!',next?'info':'success');setTimeout(loadConfig,500);}}catch(e){showToast('Error','error');}
     }
 
-    async function toggleProbSizing() {
-        const next=!config.prob_sizing_enabled;
-        try{const r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prob_sizing_enabled:next})}); if(r.ok){config.prob_sizing_enabled=next;document.getElementById('prob-toggle').classList.toggle('active',next);showToast(next?'Probability sizing ON':'Probability sizing OFF','info');}}catch(e){}
-    }
+
     async function updateStrategy() {
         const v=document.getElementById('strategy-select').value;
         try{await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({copy_strategy:v})});config.copy_strategy=v;showToast('Strategy: '+v,'success');toggleStrategyFields(v);}catch(e){}
@@ -644,7 +637,6 @@
         document.getElementById('engine-failed').textContent=(config.trades_failed||0).toLocaleString();
         document.getElementById('last-check').textContent=config.last_check?new Date(config.last_check).toLocaleTimeString():'--';
         document.getElementById('strategy-select').value=config.copy_strategy||'PERCENTAGE';
-        document.getElementById('prob-toggle').classList.toggle('active',!!config.prob_sizing_enabled);
         toggleStrategyFields(config.copy_strategy||'PERCENTAGE');
         // TP/SL fields
         document.getElementById('tp-toggle').classList.toggle('active',!!config.tp_enabled);
@@ -732,12 +724,15 @@
         });
         const eventSeen={};
 
-        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Entry</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
+        el.innerHTML=`<table class="ct-table"><thead><tr><th>Time</th><th>Market</th><th>Outcome</th><th>Side</th><th>Size</th><th>Entry</th><th>Current</th><th>Status</th><th>Result</th><th>PnL</th><th>Mode</th>${actionTh}</tr></thead><tbody>${trades.map(t=>{
             const link=polyLink(t.market_slug,t.event_slug);
             const resultCls=t.result==='WIN'?'result-win':t.result==='LOSS'?'result-loss':'result-open';
             const closeTag=t.close_reason==='TP'?' <span style="font-size:9px;background:rgba(34,197,94,0.15);color:var(--green);padding:1px 4px;border-radius:3px;font-weight:700;">TP</span>':t.close_reason==='SL'?' <span style="font-size:9px;background:rgba(239,68,68,0.15);color:var(--red);padding:1px 4px;border-radius:3px;font-weight:700;">SL</span>':'';
-            const pnlCls=t.pnl>0?'pnl-positive':t.pnl<0?'pnl-negative':'';
-            const pnlStr=t.pnl?((t.pnl>=0?'+':'')+parseFloat(t.pnl).toFixed(2)):'--';
+            const pnlVal=t.pnl!==null&&t.pnl!==undefined?parseFloat(t.pnl):null;
+            const pnlPctVal=t.pnl_pct!==null&&t.pnl_pct!==undefined?parseFloat(t.pnl_pct):null;
+            const pnlCls=pnlVal>0?'pnl-positive':pnlVal<0?'pnl-negative':'';
+            const pnlStr=pnlVal!==null?((pnlVal>=0?'+':'')+pnlVal.toFixed(2)+(pnlPctVal!==null?' ('+(pnlPctVal>=0?'+':'')+pnlPctVal.toFixed(1)+'%)':'')):'--';
+            const curPrice=t.current_price?(parseFloat(t.current_price)*100).toFixed(1)+'c':'--';
             const iconHtml=t.icon?`<img src="${t.icon}" style="width:18px;height:18px;border-radius:3px;vertical-align:middle;margin-right:5px;" onerror="this.style.display='none'">`:'';
             const tier=tierClass(parseFloat(t.original_size||0));
             const sideStr=(t.side||'').toUpperCase();
