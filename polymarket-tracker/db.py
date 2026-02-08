@@ -3,7 +3,7 @@ Shared SQLite database module for all Polymarket Copy Trader components.
 
 Provides:
 - A single WAL-mode connection pool (one writer at a time)
-- A global write lock shared across app.py, fetcher.py, and copy_trader.py
+- A global write lock shared across app.py and fetcher.py
 - Context-manager helpers that guarantee connections are closed
 """
 import sqlite3

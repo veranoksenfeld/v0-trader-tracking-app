@@ -1,7 +1,7 @@
 """
 Polymarket Copy Trader - Flask Web Application
 Integrated copy trading engine with MOCK MODE for testing.
-Unified log system for app.py, fetcher.py, copy_trader.py.
+Unified log system for app.py and fetcher.py.
 """
 from flask import Flask, render_template, jsonify, request, Response
 from datetime import datetime

@@ -223,8 +223,8 @@ def setup():
     print("  Configuration saved to config.json")
     print()
     print("  Next steps:")
-    print("    1. python fetcher.py   (fetch trades from target wallets)")
-    print("    2. python app.py       (start dashboard + copy engine)")
+    print("    1. python app.py       (start dashboard + copy engine)")
+    print("    2. python fetcher.py   (fetch trades from target wallets)")
     print("    3. Open http://localhost:5000")
     print("=" * 60)
 

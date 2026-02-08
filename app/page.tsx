@@ -1,3 +1,4 @@
+import React from "react"
 import { Terminal, Copy, ArrowRight, Wallet, Activity, Users, Settings } from "lucide-react"
 
 function Step({ number, children }: { number: number; children: React.ReactNode }) {
@@ -72,7 +73,7 @@ export default function Page() {
           <FeatureCard
             icon={Settings}
             title="Copy Trading"
-            description="Mirror trades from selected wallets with configurable size limits and percentages."
+            description="Built-in engine mirrors trades from selected wallets with tiered execution, strategy-based sizing, and configurable limits."
           />
         </div>
 
@@ -113,12 +114,12 @@ pip install -r requirements.txt`}</CodeBlock>
             </Step>
 
             <Step number={3}>
-              <p className="mb-2 font-medium text-white">Start the Flask web server (Terminal 1)</p>
+              <p className="mb-2 font-medium text-white">Start the Flask web server with built-in copy engine (Terminal 1)</p>
               <CodeBlock>{`python app.py`}</CodeBlock>
               <p className="mt-2 text-zinc-400">
                 Open{" "}
                 <code className="rounded bg-zinc-800 px-1.5 py-0.5 text-xs text-indigo-300">http://localhost:5000</code>{" "}
-                in your browser.
+                in your browser. The copy trading engine starts automatically in the background.
               </p>
             </Step>
 
@@ -126,14 +127,6 @@ pip install -r requirements.txt`}</CodeBlock>
               <p className="mb-2 font-medium text-white">Start the trade fetcher (Terminal 2)</p>
               <CodeBlock>{`python fetcher.py`}</CodeBlock>
               <p className="mt-2 text-zinc-400">Polls Polymarket every 60 seconds for new trades from tracked wallets.</p>
-            </Step>
-
-            <Step number={5}>
-              <p className="mb-2 font-medium text-white">Start the copy trader (Terminal 3 - optional)</p>
-              <CodeBlock>{`python copy_trader.py`}</CodeBlock>
-              <p className="mt-2 text-zinc-400">
-                Only needed if you want to copy trades. Requires your Polymarket private key configured via the Settings panel.
-              </p>
             </Step>
           </div>
         </div>
@@ -163,7 +156,7 @@ pip install -r requirements.txt`}</CodeBlock>
             <div className="flex items-start gap-3">
               <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-indigo-400" />
               <p className="text-sm text-zinc-300">
-                <strong className="text-white">Enable copy trading</strong> — In the Settings modal, enable the master Copy Trading toggle. Then click on individual traders and toggle their Copy Trading switch.
+                <strong className="text-white">Enable copy trading</strong> — The copy engine runs automatically inside app.py. Click on any trader and toggle their "Copy This Trader" switch to mirror their buys and sells. Configure strategy, sizing, and limits from the Dashboard.
               </p>
             </div>
             <div className="flex items-start gap-3">
@@ -179,9 +172,10 @@ pip install -r requirements.txt`}</CodeBlock>
         <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-8">
           <h2 className="mb-6 text-lg font-semibold text-white">Project Structure</h2>
           <CodeBlock>{`polymarket-tracker/
-  app.py              # Flask web server + REST API
+  app.py              # Flask web server + REST API + copy trading engine
   fetcher.py          # Background trade fetcher (runs every 60s)
-  copy_trader.py      # Copy trade executor (runs every 30s)
+  db.py               # Shared SQLite database module
+  setup_config.py     # Interactive wallet configuration
   requirements.txt    # Python dependencies
   config.json         # Auto-created: API credentials + settings
   polymarket_trades.db  # Auto-created: SQLite database
